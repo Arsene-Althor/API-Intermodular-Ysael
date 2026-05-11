@@ -11,7 +11,7 @@ API REST desarrollada con **Node.js**, **Express** y **MongoDB (Mongoose)** para
 - [Estructura del proyecto](#estructura-del-proyecto)
 - [Sistema de Auditoría de Reservas](#sistema-de-auditoría-de-reservas)
 - [Módulo de Reseñas](#módulo-de-reseñas)
-- [Integración con clientes (WPF / Android)](#integración-con-clientes-wpf--android)
+- [Endpoints consumidos por los clientes](#endpoints-consumidos-por-los-clientes)
 - [Cambios recientes](#cambios-recientes)
 
 ---
@@ -127,19 +127,9 @@ Si la operación fue exitosa → logBookingChange() guarda el registro
 Respuesta al cliente
 ```
 
-Para consultar el historial:
-
-```
-GET /reservation/{reservation_id}/audit → devuelve registros ordenados por fecha
-```
-
----
-
 ### 1. Modelo — `BookingAuditLog.js`
 
-**Ubicación:** `models/BookingAuditLog.js`
-
-Define el esquema de la colección `booking_audit_log` en MongoDB. Cada documento representa un evento de auditoría.
+Define el esquema de la colección `booking_audit_log` en MongoDB.
 
 | Campo            | Tipo   | Descripción                                                        |
 |------------------|--------|--------------------------------------------------------------------|
@@ -151,276 +141,64 @@ Define el esquema de la colección `booking_audit_log` en MongoDB. Cada document
 | `new_state`      | Mixed  | Snapshot de la reserva después del cambio                          |
 | `timestamp`      | Date   | Fecha y hora del evento                                            |
 
-El esquema incluye un **índice compuesto** `(booking_id, timestamp)` que optimiza las consultas de historial ordenadas cronológicamente.
-
-```javascript
-bookingAuditLogSchema.index({ booking_id: 1, timestamp: 1 });
-```
-
----
+Índice compuesto `(booking_id, timestamp)` para consultas eficientes.
 
 ### 2. Servicio — `auditService.js`
 
-**Ubicación:** `services/auditService.js`
+Funciones reutilizables de auditoría:
 
-Contiene la lógica reutilizable de auditoría. Exporta las siguientes funciones:
-
-#### `actorTypeFromRole(role)`
-
-Traduce el rol de la aplicación al tipo de actor del modelo de auditoría:
-
-```javascript
-function actorTypeFromRole(role) {
-  return role === 'client' ? 'user' : 'employee';
-}
-```
-
-#### `cloneState(doc)`
-
-Genera una copia profunda e independiente de un documento Mongoose para evitar que futuras mutaciones alteren el registro almacenado:
-
-```javascript
-function cloneState(doc) {
-  if (doc == null) return null;
-  const plain = typeof doc.toObject === 'function' ? doc.toObject() : doc;
-  return JSON.parse(JSON.stringify(plain));
-}
-```
-
-#### `logBookingChange({...})`
-
-Inserta un registro en `booking_audit_log`. Si la inserción falla, el error se registra en consola sin interrumpir la operación principal de la reserva:
-
-```javascript
-const logBookingChange = async ({ booking_id, action, actor_id, actor_type, previous_state, new_state }) => {
-  try {
-    await BookingAuditLog.create({
-      booking_id, action, actor_id, actor_type,
-      previous_state: cloneState(previous_state),
-      new_state:      cloneState(new_state),
-      timestamp:      new Date(),
-    });
-  } catch (error) {
-    console.error(`[Auditoría] Error al guardar log (${booking_id}):`, error.message);
-  }
-};
-```
-
-#### `describeReservationAuditChanges(previous_state, new_state, action)`
-
-Compara el estado anterior y el posterior campo a campo y genera un resumen legible de los cambios. Esta información **no se persiste** en MongoDB; se calcula al vuelo cuando se consulta el historial.
-
-```javascript
-function describeReservationAuditChanges(previous_state, new_state, action) {
-  const resumen_cambios = [];
-  const detalle_cambios = [];
-
-  if (action === 'CREATED' || previous_state == null) {
-    resumen_cambios.push('Alta de reserva (no había estado anterior).');
-    return { resumen_cambios, detalle_cambios };
-  }
-
-  // Compara cada campo entre el estado anterior y el nuevo
-  const keys = new Set([...Object.keys(prev), ...Object.keys(sig)]);
-  for (const key of keys) {
-    if (mismoValorAuditoria(antes, despues)) continue;
-    const etiqueta = ETIQUETA_CAMPO[key] || key;
-    detalle_cambios.push({ campo: key, etiqueta, antes, despues });
-    resumen_cambios.push(`${etiqueta}: ${valorAntes} → ${valorDespues}`);
-  }
-
-  return { resumen_cambios, detalle_cambios };
-}
-```
-
-El diccionario `ETIQUETA_CAMPO` traduce los nombres internos de los campos a etiquetas en español (`room_id` → `"Habitación"`, `price` → `"Precio"`, etc.). La función auxiliar `valorTextoAuditoria` formatea fechas, booleanos y valores nulos para su presentación.
-
----
+- **`actorTypeFromRole(role)`** — Convierte el rol de la aplicación (`client` → `user`, resto → `employee`).
+- **`cloneState(doc)`** — Copia profunda de un documento Mongoose para congelar el estado en el registro.
+- **`logBookingChange({...})`** — Inserta un registro en `booking_audit_log`. Si falla, no interrumpe la operación principal.
+- **`describeReservationAuditChanges(previous, new, action)`** — Compara ambos estados campo a campo y genera `resumen_cambios` (texto legible) y `detalle_cambios` (datos estructurados). Esta información se calcula al vuelo al consultar, no se persiste.
 
 ### 3. Middleware — `bookingAuditMiddleware.js`
 
-**Ubicación:** `middleware/bookingAuditMiddleware.js`
-
-Se ejecuta **antes** del controlador para capturar el estado actual de la reserva en MongoDB.
-
-#### `capturePreviousReservationState`
-
-Utilizado antes de operaciones de cancelación y actualización. Lee el `reservation_id` del **body** o de los **parámetros de ruta** (para soportar tanto `POST /cancel` como `DELETE /cancel/:reservation_id`):
-
-```javascript
-async function capturePreviousReservationState(req, res, next) {
-  const reservation_id =
-    (req.body && req.body.reservation_id) ||
-    (req.params && req.params.reservation_id);
-
-  if (!reservation_id) {
-    req.bookingAuditPreviousState = undefined;
-    return next();
-  }
-
-  const doc = await Reservation.findOne({ reservation_id });
-  req.bookingAuditPreviousState = doc ? cloneState(doc) : null;
-  next();
-}
-```
-
-#### `capturePreviousForNewReservation`
-
-Para la creación de reservas, establece `null` como estado previo:
-
-```javascript
-function capturePreviousForNewReservation(req, res, next) {
-  req.bookingAuditPreviousState = null;
-  next();
-}
-```
-
----
+- **`capturePreviousReservationState`** — Antes de cancelar o actualizar, lee la reserva actual desde MongoDB y la guarda en `req.bookingAuditPreviousState`. Soporta `reservation_id` desde body o parámetros de ruta.
+- **`capturePreviousForNewReservation`** — Para creación de reservas, establece `null` como estado previo.
 
 ### 4. Controlador — `auditController.js`
 
-**Ubicación:** `controllers/auditController.js`
+- **`getBookingAudit(req, res)`** — Endpoint de consulta. Verifica permisos (cliente dueño o personal), recupera los registros ordenados cronológicamente y los enriquece con `resumen_cambios` y `detalle_cambios`.
 
-Controlador de **solo lectura** que devuelve el historial de auditoría de una reserva.
-
-#### `getBookingAudit(req, res)`
-
-1. Verifica que la reserva exista.
-2. Comprueba permisos: el cliente solo puede ver sus propias reservas; administradores y empleados pueden consultar cualquiera.
-3. Recupera los registros de `booking_audit_log` ordenados cronológicamente.
-4. **Enriquece cada registro** con `resumen_cambios` y `detalle_cambios` mediante `describeReservationAuditChanges`, proporcionando un resumen legible de las diferencias entre estados.
+### 5. Rutas de auditoría
 
 ```javascript
-const listaConResumen = lista.map((doc) => {
-  const { resumen_cambios, detalle_cambios } = describeReservationAuditChanges(
-    doc.previous_state, doc.new_state, doc.action
-  );
-  return { ...doc, resumen_cambios, detalle_cambios };
-});
-res.json(listaConResumen);
-```
-
-Ejemplo de campos añadidos en la respuesta JSON:
-
-```json
-{
-  "resumen_cambios": ["Precio: 200 → 50", "Fecha cancelación: — → 2026-05-11 01:18"],
-  "detalle_cambios": [
-    { "campo": "price", "etiqueta": "Precio", "antes": 200, "despues": 50 },
-    { "campo": "cancelation_date", "etiqueta": "Fecha cancelación", "antes": null, "despues": "2026-05-11T01:18:00.000Z" }
-  ]
-}
-```
-
----
-
-### 5. Rutas — `reservationRoutes.js`
-
-**Ubicación:** `routes/reservationRoutes.js`
-
-Define las rutas HTTP vinculadas a reservas y auditoría. Todas requieren autenticación (`requireLogin`).
-
-```javascript
-// Crear reserva
-router.post('/add', capturePreviousForNewReservation, reservationController.addReservation);
-
-// Cancelar reserva (dos variantes)
-router.post('/cancel', capturePreviousReservationState, reservationController.cancelReservation);
+router.post('/add',    capturePreviousForNewReservation,   reservationController.addReservation);
+router.post('/cancel', capturePreviousReservationState,    reservationController.cancelReservation);
 router.delete('/cancel/:reservation_id', capturePreviousReservationState, reservationController.cancelReservation);
-
-// Actualizar reserva
-router.patch('/update', capturePreviousReservationState, reservationController.updateReservation);
-
-// Consultar auditoría
+router.patch('/update', capturePreviousReservationState,   reservationController.updateReservation);
 router.get('/:reservation_id/audit', auditController.getBookingAudit);
 ```
 
-**Cambios recientes en las rutas:**
-- Se añadió `DELETE /cancel/:reservation_id` como alternativa al `POST /cancel`, permitiendo que el cliente WPF utilice el verbo HTTP semánticamente correcto.
-- El método de actualización cambió de `PUT` a `PATCH`, ya que las actualizaciones son parciales.
-
----
-
 ### 6. Integración en `reservationController.js`
 
-El controlador de reservas invoca `logBookingChange` tras cada operación exitosa:
-
-```javascript
-// Al crear
-await logBookingChange({
-  booking_id: reservation.reservation_id,
-  action: 'CREATED',
-  actor_id: req.user.user_id,
-  actor_type: actorTypeFromRole(req.user.role),
-  previous_state: req.bookingAuditPreviousState ?? null,
-  new_state: reservation,
-});
-
-// Al cancelar → action: 'CANCELED'
-// Al actualizar → action: 'UPDATED'
-```
-
-La función `cancelReservation` fue refactorizada para aceptar el `reservation_id` desde el body (`POST`) o desde los parámetros de ruta (`DELETE`), y el `price` desde el body o desde query string:
-
-```javascript
-const reservation_id =
-  (req.body && req.body.reservation_id) || (req.params && req.params.reservation_id);
-let price = req.body && req.body.price;
-if (price === undefined && req.query && req.query.price !== undefined) {
-  price = req.query.price;
-}
-```
+El controlador invoca `logBookingChange` tras cada operación exitosa (crear, cancelar, actualizar). La función `cancelReservation` acepta `reservation_id` desde body (`POST`) o parámetros de ruta (`DELETE`), y `price` desde body o query string.
 
 ---
 
 ## Módulo de Reseñas
 
-### Descripción
-
-Permite a los clientes valorar habitaciones en las que se han alojado, con una puntuación de 1 a 5 y un comentario de texto.
-
 ### Modelo — `Review.js`
 
-Colección `reviews` en MongoDB. Campos principales:
+Colección `reviews` en MongoDB:
 
 | Campo       | Tipo   | Descripción                                            |
 |-------------|--------|--------------------------------------------------------|
 | `review_id` | String | Identificador único (`REV-xxxxx`)                      |
 | `room_id`   | String | Habitación reseñada                                    |
 | `user_id`   | String | Cliente autor de la reseña                             |
-| `user_name` | String | Nombre completo del cliente (se resuelve en el servidor) |
+| `user_name` | String | Nombre completo del cliente (resuelto en el servidor)  |
 | `rating`    | Number | Puntuación entre 1 y 5                                 |
 | `comment`   | String | Texto de la reseña (máx. 2000 caracteres)              |
 
 ### Controlador — `reviewController.js`
 
-#### `nextReviewId()`
-
-Genera el siguiente `review_id` consultando directamente la colección `reviews`, sin depender de una colección `counters` auxiliar (eliminada en la refactorización):
-
-```javascript
-async function nextReviewId() {
-  const last = await Review.findOne().sort({ review_id: -1 }).select("review_id").lean();
-  let n = 0;
-  if (last && last.review_id && /^REV-[0-9]{5}$/.test(last.review_id)) {
-    n = parseInt(last.review_id.split("-")[1], 10);
-  }
-  return `REV-${String(n + 1).padStart(5, "0")}`;
-}
-```
-
-#### `createReview(req, res)`
-
-Validaciones aplicadas antes de insertar:
-1. Campos obligatorios: `room_id`, `rating`, `comment`.
-2. `rating` debe ser un entero entre 1 y 5.
-3. El usuario debe tener al menos una reserva en esa habitación.
-4. No se permite más de una reseña por usuario y habitación.
-5. Se resuelve el `user_name` desde la colección de usuarios.
-
-#### `deleteReview(req, res)`
-
-Permite eliminar una reseña. Solo el autor o un administrador pueden ejecutar la acción.
+- **`nextReviewId()`** — Genera el siguiente ID consultando directamente la colección `reviews`, sin colección auxiliar `counters`.
+- **`createReview`** — Valida campos, rating 1-5, existencia de reserva previa, duplicados, y resuelve `user_name` desde la BD.
+- **`deleteReview`** — Solo el autor o un administrador pueden eliminar.
+- **`getMyReviews`** — Reseñas del usuario autenticado.
+- **`getReviewsByRoom`** — Reseñas de una habitación (público, sin autenticación).
 
 ### Rutas — `reviewRoutes.js`
 
@@ -431,78 +209,46 @@ router.post("/create",       requireLogin, reviewController.createReview);
 router.delete("/delete",     requireLogin, reviewController.deleteReview);
 ```
 
-La ruta `GET /room/:roomId` es pública (no requiere autenticación) para que las habitaciones puedan mostrar reseñas sin necesidad de login.
-
 ---
 
-## Integración con clientes (WPF / Android)
+## Endpoints consumidos por los clientes
 
-### Cliente WPF (.NET / C#)
+Referencia de los endpoints que utilizan las aplicaciones cliente (WPF y Android). Cada proyecto cliente cuenta con su propio README con documentación específica.
 
-El proyecto WPF (`WPF-Intermodular-Ysael`) consume la API mediante `HttpClient` y sigue el patrón MVVM. Los aspectos relevantes de la integración con auditoría:
+### Autenticación
 
-#### Modelos de auditoría
+| Método | Ruta              | Descripción         | Auth |
+|--------|--------------------|----------------------|------|
+| POST   | `/auth/login`      | Inicio de sesión     | No   |
+| POST   | `/auth/register`   | Registro de usuario  | No   |
 
-- **`BookingAuditEntry.cs`** — Deserializa la respuesta de `GET /reservation/{id}/audit`, incluyendo los nuevos campos `resumen_cambios`:
+### Reservas
 
-```csharp
-public class BookingAuditEntry
-{
-    [JsonPropertyName("booking_id")]   public string BookingId { get; set; }
-    [JsonPropertyName("action")]       public string Action { get; set; }
-    [JsonPropertyName("actor_id")]     public string ActorId { get; set; }
-    [JsonPropertyName("actor_type")]   public string ActorType { get; set; }
-    [JsonPropertyName("timestamp")]    public DateTime? Timestamp { get; set; }
-    [JsonPropertyName("resumen_cambios")] public List<string> ResumenCambios { get; set; }
-}
-```
+| Método | Ruta                               | Descripción                  | Auth    |
+|--------|-------------------------------------|-------------------------------|---------|
+| POST   | `/reservation/add`                  | Crear reserva                | Login   |
+| POST   | `/reservation/cancel`               | Cancelar (body)              | Login   |
+| DELETE | `/reservation/cancel/:id`           | Cancelar (ruta + query)      | Login   |
+| PATCH  | `/reservation/update`               | Actualizar reserva           | Login   |
+| GET    | `/reservation/mine`                 | Reservas del usuario         | Login   |
+| GET    | `/reservation/all`                  | Todas las reservas           | Admin   |
+| GET    | `/reservation/allActive`            | Reservas activas             | Admin   |
+| POST   | `/reservation/getPrice`             | Calcular precio              | Login   |
+| POST   | `/reservation/getCancelationPrice`  | Precio de cancelación        | Login   |
+| GET    | `/reservation/:id/audit`            | Historial de auditoría       | Login   |
 
-- **`HistorialAuditoriaFila.cs`** — Modelo de presentación para la interfaz, con formato de fecha localizado:
+### Reseñas
 
-```csharp
-public class HistorialAuditoriaFila
-{
-    public string Accion { get; set; }
-    public string ActorId { get; set; }
-    public DateTime? Fecha { get; set; }
-    public string FechaFormateada => Fecha.HasValue ? Fecha.Value.ToString("dd/MM/yyyy HH:mm") : "—";
-    public string ResumenTexto { get; set; }
-}
-```
+| Método | Ruta                  | Descripción                    | Auth    |
+|--------|-----------------------|---------------------------------|---------|
+| GET    | `/review/mine`        | Reseñas del usuario            | Login   |
+| GET    | `/review/room/:roomId`| Reseñas de una habitación      | Público |
+| POST   | `/review/create`      | Crear reseña                   | Login   |
+| DELETE | `/review/delete`      | Eliminar reseña                | Login   |
 
-#### Servicio de reservas (`ReservationService.cs`)
+### Habitaciones y Usuarios
 
-- **`GetBookingAuditAsync`** — Consulta el historial de auditoría de una reserva:
-
-```csharp
-public static async Task<(bool exito, string mensaje, List<BookingAuditEntry> lista)>
-    GetBookingAuditAsync(string reservation_id)
-{
-    string url = $"{ApiService.BaseUrl}reservation/{Uri.EscapeDataString(reservation_id)}/audit";
-    var response = await ApiService._httpClient.GetAsync(url);
-    // Deserializa y devuelve la lista de entradas de auditoría
-}
-```
-
-- **Cancelación** — Utiliza `DELETE /cancel/:reservation_id?price=X` en lugar del anterior `POST /cancel`:
-
-```csharp
-string cancelUrl = $"{ApiService.BaseUrl}reservation/cancel/{Uri.EscapeDataString(r.reservation_id)}?price={priceStr}";
-var response = await ApiService._httpClient.DeleteAsync(cancelUrl);
-```
-
-- **Actualización** — Utiliza `PATCH /update` en lugar del anterior `PUT /update`:
-
-```csharp
-var response = await ApiService._httpClient.PatchAsync(ApiService.BaseUrl + "reservation/update", content);
-```
-
-### Cliente Android (Kotlin)
-
-La aplicación Android corrigió errores en la obtención y creación de reseñas, alineándose con los cambios realizados en la API:
-
-- Adaptación a la nueva ruta `POST /review/create` con el campo `user_name` resuelto en el servidor.
-- Corrección en la obtención de reseñas por habitación (`GET /review/room/:roomId`).
+Documentados en sus respectivos archivos de rutas (`roomRoutes.js`, `userRoutes.js`).
 
 ---
 
@@ -510,33 +256,25 @@ La aplicación Android corrigió errores en la obtención y creación de reseña
 
 ### Auditoría — Resumen de diferencias
 
-Se incorporó la función `describeReservationAuditChanges` en `auditService.js` y su integración en `auditController.js`. Ahora la respuesta del endpoint de auditoría incluye `resumen_cambios` (lista de textos legibles como `"Precio: 200 → 50"`) y `detalle_cambios` (array estructurado con campo, valor anterior y valor posterior). Esta información se calcula al vuelo y no se almacena en la base de datos.
+Se incorporó `describeReservationAuditChanges` en `auditService.js`. La respuesta del endpoint de auditoría ahora incluye `resumen_cambios` y `detalle_cambios`, calculados al vuelo sin persistirse en la base de datos.
 
 ### Refactorización de verbos HTTP
 
-| Operación   | Antes                 | Ahora                                      |
-|-------------|-----------------------|--------------------------------------------|
-| Cancelar    | `POST /cancel`        | `POST /cancel` + `DELETE /cancel/:id`      |
-| Actualizar  | `PUT /update`         | `PATCH /update`                            |
-
-El middleware de auditoría fue actualizado para leer el `reservation_id` tanto del body como de los parámetros de ruta.
+| Operación   | Antes              | Ahora                                 |
+|-------------|---------------------|----------------------------------------|
+| Cancelar    | `POST /cancel`      | `POST /cancel` + `DELETE /cancel/:id` |
+| Actualizar  | `PUT /update`       | `PATCH /update`                       |
 
 ### Eliminación de archivos
 
-- **`models/Counter.js`** — Eliminado. La generación de IDs para reseñas ahora se realiza consultando directamente la colección `reviews`.
-- **Archivos de test** (`test_create_image_defaults.js`, `test_image.js`, `test_validation.js` y sus salidas) — Eliminados del repositorio.
+- **`models/Counter.js`** — Eliminado. Los IDs de reseñas se generan consultando la colección `reviews`.
+- **Archivos de test** — Eliminados del repositorio.
 
 ### Correcciones en reseñas
 
-- **`reviewController.js`** — Refactorizado para eliminar la dependencia del modelo `Counter`. La función `nextReviewId()` calcula el siguiente ID a partir de la última reseña existente.
-- Se añadió validación de reseña duplicada por usuario y habitación.
-- Se incorporó el campo `user_name` (resuelto desde la colección de usuarios) para evitar que el cliente necesite enviarlo.
-- Se añadió el endpoint `DELETE /review/delete` para permitir la eliminación de reseñas por parte del autor o un administrador.
-
-### Integración WPF
-
-- Nuevos modelos `BookingAuditEntry` y `HistorialAuditoriaFila` para la visualización del historial de auditoría en la interfaz de escritorio.
-- `ReservationService.cs` actualizado para utilizar `DELETE` en cancelaciones y `PATCH` en actualizaciones.
-- Método `GetBookingAuditAsync` añadido para consultar la auditoría desde WPF.
+- Eliminada la dependencia del modelo `Counter`.
+- Validación de reseña duplicada por usuario y habitación.
+- Campo `user_name` resuelto en el servidor.
+- Nuevo endpoint `DELETE /review/delete`.
 
 ---
