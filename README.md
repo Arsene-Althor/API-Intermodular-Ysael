@@ -52,16 +52,16 @@ El servidor arrancará en `http://localhost:3000` (o el puerto que hayas configu
 
 ## 🛠 Tecnologías utilizadas
 
-| Tecnología   | Versión | Uso                                          |
-|--------------|---------|----------------------------------------------|
-| Node.js      | —       | Entorno de ejecución del servidor             |
-| Express      | 5.x     | Framework web para crear la API REST          |
-| Mongoose     | 9.x     | ODM para modelar y consultar datos en MongoDB |
-| JWT          | 9.x     | Autenticación mediante tokens                 |
-| bcrypt       | 6.x     | Cifrado de contraseñas                        |
-| dotenv       | 17.x   | Carga de variables de entorno desde `.env`    |
-| Multer       | 2.x     | Subida de archivos (imágenes)                 |
-| Nodemailer   | 8.x     | Envío de correos electrónicos                 |
+| Tecnología   | Uso                                          |
+|--------------|----------------------------------------------|
+| Node.js      | Entorno de ejecución del servidor             |
+| Express      | Framework web para crear la API REST          |
+| Mongoose     | ODM para modelar y consultar datos en MongoDB |
+| JWT          | Autenticación mediante tokens                 |
+| bcrypt       | Cifrado de contraseñas                        |
+| dotenv       | Carga de variables de entorno desde `.env`    |
+| Multer       | Subida de archivos (imágenes)                 |
+| Nodemailer   | Envío de correos electrónicos                 |
 
 ---
 
