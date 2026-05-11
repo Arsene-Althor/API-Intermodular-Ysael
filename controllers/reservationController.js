@@ -2,7 +2,14 @@
 const Reservation = require('../models/Reservation');
 const User = require('../models/User');
 const Room = require('../models/Room');
-const mongoose = require('mongoose');
+const { logBookingChange, actorTypeFromRole } = require('../services/auditService');
+
+// Quién puede ver o tocar una reserva concreta (dueño del cliente o personal)
+function puedeVerReserva(req, reservaDoc) {
+  if (!reservaDoc) return false;
+  if (req.user.role === 'admin' || req.user.role === 'employee') return true;
+  return reservaDoc.user_id === req.user.user_id;
+}
 
 //Función para comprobar ocupación
 async function checkOcupation(check_in, check_out, room_id, reservation_id) {
@@ -93,6 +100,17 @@ async function addReservation(req, res) {
     if (verif.respuesta) {
       let reservation = new Reservation({ reservation_id: new_id, room_id, user_id, check_in: nuevaEntrada, check_out: nuevaSalida, price: precioNum, createdBy });
       await reservation.save();
+
+      // Auditoría: reserva nueva (middleware dejó bookingAuditPreviousState en null)
+      await logBookingChange({
+        booking_id: reservation.reservation_id,
+        action: 'CREATED',
+        actor_id: req.user.user_id,
+        actor_type: actorTypeFromRole(req.user.role),
+        previous_state: req.bookingAuditPreviousState ?? null,
+        new_state: reservation,
+      });
+
       return res.json(reservation)
     } else {
       return res.status(400).json({ error: verif.error })
@@ -104,16 +122,25 @@ async function addReservation(req, res) {
   }
 }
 
-// Cancelar una reserva
+// Cancelar una reserva (POST body o DELETE /cancel/:reservation_id + price en body o query)
 async function cancelReservation(req, res) {
   try {
-    const { reservation_id, price } = req.body;
+    const reservation_id =
+      (req.body && req.body.reservation_id) || (req.params && req.params.reservation_id);
+    let price = req.body && req.body.price;
+    if (price === undefined && req.query && req.query.price !== undefined) {
+      price = req.query.price;
+    }
     if (!reservation_id || price === undefined) {
       return res.status(400).json({ error: 'Faltan datos' });
     }
 
     const reservation = await Reservation.findOne({ reservation_id });
     if (!reservation) return res.status(404).json({ error: 'Reserva no encontrado' });
+
+    if (!puedeVerReserva(req, reservation)) {
+      return res.status(403).json({ error: 'No autorizado' });
+    }
 
     if (reservation.cancelation_date !== null) {
       return res.status(400).json({ error: 'La reserva ya estaba cancelada anteriormente' });
@@ -127,6 +154,15 @@ async function cancelReservation(req, res) {
     reservation.price = newPrice;
     reservation.cancelation_date = new Date();
     await reservation.save();
+
+    await logBookingChange({
+      booking_id: reservation.reservation_id,
+      action: 'CANCELED',
+      actor_id: req.user.user_id,
+      actor_type: actorTypeFromRole(req.user.role),
+      previous_state: req.bookingAuditPreviousState,
+      new_state: reservation,
+    });
 
     res.json({ mensaje: 'Cancelada correctamente', reservation });
   } catch (err) {
@@ -193,6 +229,10 @@ async function updateReservation(req, res) {
     if (!reservation) return res.status(404).json({ error: 'Reserva no encontrada' });
     if (reservation.cancelation_date != null) return res.status(404).json({ error: 'No es posible modificar reservas canceladas' });
 
+    if (!puedeVerReserva(req, reservation)) {
+      return res.status(403).json({ error: 'No autorizado' });
+    }
+
     let user = await User.findOne({ user_id });
     if (!user) return res.status(400).json({ error: 'El usuario introducido no exite' });
 
@@ -235,6 +275,16 @@ async function updateReservation(req, res) {
       reservation.user_id = user_id;
       reservation.price = precioNum;
       await reservation.save();
+
+      await logBookingChange({
+        booking_id: reservation.reservation_id,
+        action: 'UPDATED',
+        actor_id: req.user.user_id,
+        actor_type: actorTypeFromRole(req.user.role),
+        previous_state: req.bookingAuditPreviousState,
+        new_state: reservation,
+      });
+
       return res.json({ mensaje: 'Reserva modificada correctamente', reservation });
     } else {
       return res.status(400).json({ error: verif.error })
@@ -332,5 +382,5 @@ module.exports = {
   getActiveReservations,
   updateReservation,
   calculatePrice,
-  calculateCancelationPrice
+  calculateCancelationPrice,
 };

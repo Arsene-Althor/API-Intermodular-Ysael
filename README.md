@@ -1,260 +1,173 @@
-# 🏨 API Proyecto Intermodular — Sistema de Gestión Hotelera
+# API Proyecto Intermodular — Sistema de Gestión Hotelera
 
-API REST construida con **Node.js**, **Express** y **MongoDB (Mongoose)** para gestionar reservas de hotel, usuarios, habitaciones y reseñas. Incluye un **sistema de auditoría** que registra automáticamente cada cambio realizado sobre las reservas.
-
----
-
-## 📋 Tabla de contenidos
-
-- [Puesta en marcha](#-puesta-en-marcha)
-- [Tecnologías utilizadas](#-tecnologías-utilizadas)
-- [Estructura del proyecto](#-estructura-del-proyecto)
-- [Sistema de Auditoría de Reservas](#-sistema-de-auditoría-de-reservas)
-  - [¿Qué es y para qué sirve?](#qué-es-y-para-qué-sirve)
-  - [Diagrama del flujo completo](#diagrama-del-flujo-completo)
-  - [1. Modelo — BookingAuditLog.js](#1-modelo--bookingauditlogjs)
-  - [2. Servicio — auditService.js](#2-servicio--auditservicejs)
-  - [3. Middleware — bookingAuditMiddleware.js](#3-middleware--bookingauditmiddlewarejs)
-  - [4. Controlador — auditController.js](#4-controlador--auditcontrollerjs)
-  - [5. Rutas — reservationRoutes.js](#5-rutas--reservationroutesjs)
-  - [6. Integración en reservationController.js](#6-integración-en-reservationcontrollerjs)
-- [Ejemplo completo de flujo](#-ejemplo-completo-de-flujo)
+API REST desarrollada con **Node.js**, **Express** y **MongoDB (Mongoose)** para la gestión integral de un hotel: reservas, usuarios, habitaciones y reseñas. Incorpora un **sistema de auditoría** que registra de forma automática cada operación relevante sobre las reservas.
 
 ---
 
-## 🚀 Puesta en marcha
+## Tabla de contenidos
 
-### 1. Instalar dependencias
+- [Puesta en marcha](#puesta-en-marcha)
+- [Tecnologías utilizadas](#tecnologías-utilizadas)
+- [Estructura del proyecto](#estructura-del-proyecto)
+- [Sistema de Auditoría de Reservas](#sistema-de-auditoría-de-reservas)
+- [Módulo de Reseñas](#módulo-de-reseñas)
+- [Integración con clientes (WPF / Android)](#integración-con-clientes-wpf--android)
+- [Cambios recientes](#cambios-recientes)
+
+---
+
+## Puesta en marcha
 
 ```bash
 npm install
 ```
 
-### 2. Configurar variables de entorno
+Crear un archivo `.env` en la raíz del proyecto:
 
-Crea un archivo `.env` en la raíz del proyecto con las siguientes variables:
-
-| Variable      | Descripción                                          | Ejemplo                              |
-|---------------|------------------------------------------------------|--------------------------------------|
-| `MONGO_URI`   | Cadena de conexión a MongoDB Atlas o local            | `mongodb+srv://user:pass@cluster...` |
-| `PORT`        | Puerto donde escuchará el servidor                    | `3000`                               |
-| `JWT_SECRET`  | Clave secreta para firmar los tokens de autenticación | `mi_clave_super_secreta`             |
-
-### 3. Iniciar el servidor
+| Variable      | Descripción                                   | Ejemplo                              |
+|---------------|-----------------------------------------------|--------------------------------------|
+| `MONGO_URI`   | Cadena de conexión a MongoDB Atlas o local     | `mongodb+srv://user:pass@cluster...` |
+| `PORT`        | Puerto del servidor                            | `3000`                               |
+| `JWT_SECRET`  | Clave secreta para la firma de tokens JWT      | `clave_secreta_segura`               |
 
 ```bash
 npm start
 ```
 
-El servidor arrancará en `http://localhost:3000` (o el puerto que hayas configurado).
+---
+
+## Tecnologías utilizadas
+
+| Tecnología   | Uso                                            |
+|--------------|-------------------------------------------------|
+| Node.js      | Entorno de ejecución del servidor               |
+| Express      | Framework web para la API REST                  |
+| Mongoose     | ODM para modelado y consultas en MongoDB        |
+| JWT          | Autenticación basada en tokens                  |
+| bcrypt       | Cifrado de contraseñas                          |
+| dotenv       | Gestión de variables de entorno                 |
+| Multer       | Subida de archivos (imágenes)                   |
+| Nodemailer   | Envío de correos electrónicos                   |
 
 ---
 
-## 🛠 Tecnologías utilizadas
-
-| Tecnología   | Uso                                          |
-|--------------|----------------------------------------------|
-| Node.js      | Entorno de ejecución del servidor             |
-| Express      | Framework web para crear la API REST          |
-| Mongoose     | ODM para modelar y consultar datos en MongoDB |
-| JWT          | Autenticación mediante tokens                 |
-| bcrypt       | Cifrado de contraseñas                        |
-| dotenv       | Carga de variables de entorno desde `.env`    |
-| Multer       | Subida de archivos (imágenes)                 |
-| Nodemailer   | Envío de correos electrónicos                 |
-
----
-
-## 📁 Estructura del proyecto
+## Estructura del proyecto
 
 ```
 API-Intermodular-Ysael/
-├── index.js                          # Punto de entrada: arranca Express y conecta la BD
-├── db.js                             # Función de conexión a MongoDB
-├── package.json                      # Dependencias y scripts del proyecto
-├── .env                              # Variables de entorno (no se sube a Git)
+├── index.js                        # Punto de entrada del servidor
+├── db.js                           # Conexión a MongoDB
+├── package.json
+├── .env                            # Variables de entorno (no versionado)
 │
-├── models/                           # Esquemas de datos (Mongoose)
-│   ├── BookingAuditLog.js            # 📝 Modelo del registro de auditoría
-│   ├── Reservation.js                # Modelo de reservas
-│   ├── Room.js                       # Modelo de habitaciones
-│   ├── User.js                       # Modelo de usuarios
-│   ├── Review.js                     # Modelo de reseñas
-│   └── Counter.js                    # Contador auxiliar para IDs
+├── models/
+│   ├── BookingAuditLog.js          # Registro de auditoría
+│   ├── Reservation.js              # Reservas
+│   ├── Room.js                     # Habitaciones
+│   ├── User.js                     # Usuarios
+│   └── Review.js                   # Reseñas
 │
-├── controllers/                      # Lógica de cada endpoint
-│   ├── auditController.js            # 📝 Consultar historial de auditoría
-│   ├── reservationController.js      # 📝 CRUD de reservas (llama a auditoría)
-│   ├── authController.js             # Login y registro
-│   ├── userController.js             # Gestión de usuarios
-│   ├── roomController.js             # Gestión de habitaciones
-│   └── reviewController.js           # Gestión de reseñas
+├── controllers/
+│   ├── auditController.js          # Consulta de auditoría (solo lectura)
+│   ├── reservationController.js    # CRUD de reservas + escritura de auditoría
+│   ├── authController.js           # Autenticación (login / registro)
+│   ├── userController.js           # Gestión de usuarios
+│   ├── roomController.js           # Gestión de habitaciones
+│   └── reviewController.js         # Gestión de reseñas
 │
-├── middleware/                       # Funciones intermedias (se ejecutan antes del controlador)
-│   ├── bookingAuditMiddleware.js     # 📝 Captura estado previo para auditoría
-│   ├── authMiddleware.js             # Verificación de JWT y roles
-│   └── diskStorage.js               # Configuración de Multer (subida de archivos)
+├── middleware/
+│   ├── bookingAuditMiddleware.js   # Captura del estado previo (auditoría)
+│   ├── authMiddleware.js           # Verificación de JWT y roles
+│   └── diskStorage.js              # Configuración de Multer
 │
-├── services/                         # Lógica de negocio reutilizable
-│   └── auditService.js              # 📝 Funciones para guardar registros de auditoría
+├── services/
+│   └── auditService.js             # Lógica de escritura y resumen de auditoría
 │
-├── routes/                           # Definición de rutas HTTP
-│   ├── reservationRoutes.js          # 📝 Rutas de reservas (incluye ruta de auditoría)
-│   ├── authRoutes.js                 # Rutas de autenticación
-│   ├── userRoutes.js                 # Rutas de usuarios
-│   ├── roomRoutes.js                 # Rutas de habitaciones
-│   └── reviewRoutes.js              # Rutas de reseñas
+├── routes/
+│   ├── reservationRoutes.js        # Rutas de reservas (incluye auditoría)
+│   ├── authRoutes.js
+│   ├── userRoutes.js
+│   ├── roomRoutes.js
+│   └── reviewRoutes.js
 │
 └── config/
-    └── mailer.js                     # Configuración de Nodemailer
+    └── mailer.js                   # Configuración de Nodemailer
 ```
-
-> Los archivos marcados con 📝 participan en el sistema de auditoría.
 
 ---
 
-## 🔍 Sistema de Auditoría de Reservas
+## Sistema de Auditoría de Reservas
 
-### ¿Qué es y para qué sirve?
+### Descripción general
 
-El sistema de auditoría es un mecanismo que **registra automáticamente** un historial de todos los cambios que se hacen sobre las reservas. Funciona como un "diario" que anota:
+El sistema de auditoría registra de forma automática un historial de cada operación realizada sobre las reservas. Para cada evento se almacena:
 
-- **Quién** hizo el cambio (el usuario o empleado).
-- **Qué** se hizo (crear, modificar o cancelar).
-- **Cuándo** se hizo (fecha y hora exacta).
-- **Cómo estaba antes** y **cómo quedó después** del cambio.
+- **Quién** realizó la acción (identificador y tipo de actor).
+- **Qué** operación se ejecutó (`CREATED`, `UPDATED`, `CANCELED`).
+- **Cuándo** ocurrió (marca de tiempo).
+- **Estado anterior y posterior** de la reserva (snapshots completos).
 
-**¿Por qué es útil?** Imagina que un cliente dice: *"Mi reserva tenía un precio diferente"*. Con la auditoría, el administrador puede consultar el historial completo y ver exactamente qué cambió, quién lo cambió y cuándo.
+El historial es de **solo lectura**: no existen endpoints para modificar ni eliminar registros de auditoría.
 
-> **Importante:** El historial de auditoría es de **solo lectura**. Nadie puede borrar ni editar estos registros, lo que garantiza la integridad del historial.
-
----
-
-### Diagrama del flujo completo
-
-Este diagrama muestra qué pasa paso a paso cuando un usuario crea, modifica o cancela una reserva:
+### Flujo de operación
 
 ```
-┌──────────────────────────────────────────────────────────────────────────┐
-│                        FLUJO DE AUDITORÍA                               │
-│                                                                          │
-│  1. El usuario envía una petición HTTP (crear/modificar/cancelar)        │
-│                           │                                              │
-│                           ▼                                              │
-│  2. MIDDLEWARE de auditoría: captura el estado ANTERIOR de la reserva    │
-│     en MongoDB y lo guarda en req.bookingAuditPreviousState             │
-│                           │                                              │
-│                           ▼                                              │
-│  3. CONTROLADOR de reservas: valida los datos, ejecuta el cambio        │
-│     en la base de datos                                                  │
-│                           │                                              │
-│                           ▼                                              │
-│  4. Si todo fue bien → llama a logBookingChange() del SERVICIO          │
-│     pasando el estado anterior y el nuevo                                │
-│                           │                                              │
-│                           ▼                                              │
-│  5. SERVICIO de auditoría: guarda un registro en la colección           │
-│     booking_audit_log de MongoDB                                         │
-│                           │                                              │
-│                           ▼                                              │
-│  6. Se responde al usuario con el resultado de su operación             │
-└──────────────────────────────────────────────────────────────────────────┘
+Petición HTTP (crear / modificar / cancelar reserva)
+       │
+       ▼
+Middleware de auditoría → captura el estado ANTERIOR en MongoDB
+       │
+       ▼
+Controlador de reservas → valida, ejecuta el cambio en la BD
+       │
+       ▼
+Si la operación fue exitosa → logBookingChange() guarda el registro
+       │
+       ▼
+Respuesta al cliente
+```
 
-Para CONSULTAR el historial:
+Para consultar el historial:
 
-  GET /reservation/RSV-00001/audit  →  auditController  →  devuelve todos
-                                        los registros ordenados por fecha
+```
+GET /reservation/{reservation_id}/audit → devuelve registros ordenados por fecha
 ```
 
 ---
 
 ### 1. Modelo — `BookingAuditLog.js`
 
-📄 **Ubicación:** `models/BookingAuditLog.js`
+**Ubicación:** `models/BookingAuditLog.js`
 
-**¿Para qué sirve este archivo?**
-Define la **estructura de datos** (esquema) que tendrá cada registro de auditoría en MongoDB. Es como un molde que dice: *"Cada registro debe tener estos campos con este formato"*. MongoDB creará una colección llamada `booking_audit_log` donde se almacenan todos los registros.
+Define el esquema de la colección `booking_audit_log` en MongoDB. Cada documento representa un evento de auditoría.
 
-**Campos del esquema:**
+| Campo            | Tipo   | Descripción                                                        |
+|------------------|--------|--------------------------------------------------------------------|
+| `booking_id`     | String | ID de negocio de la reserva (`RSV-xxxxx`)                          |
+| `action`         | String | Operación realizada: `CREATED`, `UPDATED` o `CANCELED`             |
+| `actor_id`       | String | ID del usuario que ejecutó la acción                               |
+| `actor_type`     | String | `user` (cliente) o `employee` (empleado/administrador)             |
+| `previous_state` | Mixed  | Snapshot de la reserva antes del cambio (`null` en alta)           |
+| `new_state`      | Mixed  | Snapshot de la reserva después del cambio                          |
+| `timestamp`      | Date   | Fecha y hora del evento                                            |
 
-| Campo            | Tipo     | Descripción                                                       |
-|------------------|----------|-------------------------------------------------------------------|
-| `booking_id`     | String   | ID de negocio de la reserva (`RSV-00001`), no el `_id` de MongoDB |
-| `action`         | String   | Tipo de operación: `CREATED`, `UPDATED` o `CANCELED`              |
-| `actor_id`       | String   | ID del usuario que realizó la acción (`CLI-00001` o `EMP-00001`)  |
-| `actor_type`     | String   | Tipo de actor: `user` (cliente) o `employee` (empleado/admin)     |
-| `previous_state` | Mixed    | Copia completa de la reserva **antes** del cambio (o `null` si es nueva) |
-| `new_state`      | Mixed    | Copia completa de la reserva **después** del cambio               |
-| `timestamp`      | Date     | Fecha y hora exacta en que ocurrió el evento                      |
-
-**Código completo del archivo:**
+El esquema incluye un **índice compuesto** `(booking_id, timestamp)` que optimiza las consultas de historial ordenadas cronológicamente.
 
 ```javascript
-const mongoose = require('mongoose');
-
-const bookingAuditLogSchema = new mongoose.Schema(
-  {
-    booking_id: {
-      type: String,
-      required: true,    // Obligatorio: siempre debe indicar a qué reserva pertenece
-      trim: true,
-      index: true,        // Índice para búsquedas rápidas por reserva
-    },
-    action: {
-      type: String,       // 'CREATED', 'UPDATED' o 'CANCELED'
-      required: true,
-      trim: true,
-    },
-    actor_id: {
-      type: String,       // Quién hizo la acción (ej: 'CLI-00001')
-      required: true,
-      trim: true,
-    },
-    actor_type: {
-      type: String,
-      required: true,
-      enum: ['user', 'employee'],  // Solo estos dos valores son válidos
-    },
-    previous_state: {
-      type: mongoose.Schema.Types.Mixed,  // Acepta cualquier estructura JSON
-      default: null,                       // null cuando se crea una reserva nueva
-    },
-    new_state: {
-      type: mongoose.Schema.Types.Mixed,  // Snapshot de la reserva después del cambio
-      default: null,
-    },
-    timestamp: {
-      type: Date,
-      default: Date.now,   // Se genera automáticamente con la fecha actual
-      index: true,
-    },
-  },
-  { collection: 'booking_audit_log' }  // Nombre de la colección en MongoDB
-);
-
-// Índice compuesto: permite buscar los logs de una reserva ordenados por fecha
 bookingAuditLogSchema.index({ booking_id: 1, timestamp: 1 });
-
-module.exports = mongoose.model('Booking_Audit_Log', bookingAuditLogSchema);
 ```
-
-**¿Qué es el índice compuesto?**
-La línea `bookingAuditLogSchema.index({ booking_id: 1, timestamp: 1 })` le dice a MongoDB: *"Organiza los datos de forma que sea muy rápido buscar por `booking_id` y a la vez ordenar por `timestamp`"*. Sin este índice, las consultas serían más lentas conforme crezca el historial.
 
 ---
 
 ### 2. Servicio — `auditService.js`
 
-📄 **Ubicación:** `services/auditService.js`
+**Ubicación:** `services/auditService.js`
 
-**¿Para qué sirve este archivo?**
-Contiene las **funciones reutilizables** que se encargan de guardar los registros de auditoría. Está separado del controlador para poder llamarlo desde cualquier parte del código sin duplicar lógica. Es el "motor" que graba cada entrada del diario.
+Contiene la lógica reutilizable de auditoría. Exporta las siguientes funciones:
 
-**Funciones que contiene:**
+#### `actorTypeFromRole(role)`
 
-#### `actorTypeFromRole(role)` — Traducir el rol al tipo de actor
-
-Convierte el rol del usuario de la aplicación (`client`, `admin`, `employee`) al formato que espera el modelo de auditoría (`user` o `employee`).
+Traduce el rol de la aplicación al tipo de actor del modelo de auditoría:
 
 ```javascript
 function actorTypeFromRole(role) {
@@ -262,116 +175,103 @@ function actorTypeFromRole(role) {
 }
 ```
 
-**Lógica:** Si el rol es `client`, devuelve `'user'`. Para cualquier otro rol (`admin` o `employee`), devuelve `'employee'`. Así el modelo de auditoría solo necesita distinguir entre dos tipos de actor.
+#### `cloneState(doc)`
 
----
-
-#### `cloneState(doc)` — Crear una copia independiente del documento
-
-Crea una **copia profunda** (clon) de un documento de reserva para guardarlo en el log sin que cambios futuros afecten al registro.
+Genera una copia profunda e independiente de un documento Mongoose para evitar que futuras mutaciones alteren el registro almacenado:
 
 ```javascript
 function cloneState(doc) {
   if (doc == null) return null;
-  // Si es un documento Mongoose, lo convierte a objeto plano
   const plain = typeof doc.toObject === 'function' ? doc.toObject() : doc;
-  // JSON.parse + JSON.stringify crea una copia totalmente independiente
   return JSON.parse(JSON.stringify(plain));
 }
 ```
 
-**¿Por qué es necesario clonar?** En JavaScript, los objetos se pasan por referencia. Si guardamos directamente el documento de la reserva y luego alguien lo modifica, nuestro registro de auditoría también se modificaría. Al clonar, nos aseguramos de que el registro queda "congelado" tal como estaba en ese momento.
+#### `logBookingChange({...})`
 
----
-
-#### `logBookingChange({...})` — Guardar un registro de auditoría
-
-Esta es la función principal que **inserta un nuevo registro** en la colección `booking_audit_log`.
+Inserta un registro en `booking_audit_log`. Si la inserción falla, el error se registra en consola sin interrumpir la operación principal de la reserva:
 
 ```javascript
-const logBookingChange = async ({
-  booking_id,      // ID de la reserva (ej: 'RSV-00001')
-  action,          // Qué se hizo: 'CREATED', 'UPDATED' o 'CANCELED'
-  actor_id,        // Quién lo hizo (ej: 'EMP-00001')
-  actor_type,      // Tipo de actor: 'user' o 'employee'
-  previous_state,  // Estado anterior de la reserva (null si es nueva)
-  new_state,       // Estado nuevo de la reserva tras el cambio
-}) => {
+const logBookingChange = async ({ booking_id, action, actor_id, actor_type, previous_state, new_state }) => {
   try {
     await BookingAuditLog.create({
-      booking_id,
-      action,
-      actor_id,
-      actor_type,
-      previous_state: cloneState(previous_state),  // Clona por seguridad
-      new_state: cloneState(new_state),
-      timestamp: new Date(),                        // Marca de tiempo actual
+      booking_id, action, actor_id, actor_type,
+      previous_state: cloneState(previous_state),
+      new_state:      cloneState(new_state),
+      timestamp:      new Date(),
     });
-    console.log(`[Auditoría] '${action}' → reserva ${booking_id}`);
   } catch (error) {
-    // Si falla, solo muestra error en consola pero NO interrumpe la operación principal
     console.error(`[Auditoría] Error al guardar log (${booking_id}):`, error.message);
   }
 };
 ```
 
-**Detalle importante:** Si ocurre un error al guardar el registro de auditoría (por ejemplo, un problema temporal de conexión con la base de datos), la operación principal de la reserva **no se ve afectada**. Esto es intencional: es preferible que la reserva se procese correctamente y perder un registro de auditoría, a que toda la operación falle.
+#### `describeReservationAuditChanges(previous_state, new_state, action)`
+
+**Función añadida recientemente.** Compara el estado anterior y el posterior campo a campo y genera un resumen legible de los cambios. Esta información **no se persiste** en MongoDB; se calcula al vuelo cuando se consulta el historial.
+
+```javascript
+function describeReservationAuditChanges(previous_state, new_state, action) {
+  const resumen_cambios = [];
+  const detalle_cambios = [];
+
+  if (action === 'CREATED' || previous_state == null) {
+    resumen_cambios.push('Alta de reserva (no había estado anterior).');
+    return { resumen_cambios, detalle_cambios };
+  }
+
+  // Compara cada campo entre el estado anterior y el nuevo
+  const keys = new Set([...Object.keys(prev), ...Object.keys(sig)]);
+  for (const key of keys) {
+    if (mismoValorAuditoria(antes, despues)) continue;
+    const etiqueta = ETIQUETA_CAMPO[key] || key;
+    detalle_cambios.push({ campo: key, etiqueta, antes, despues });
+    resumen_cambios.push(`${etiqueta}: ${valorAntes} → ${valorDespues}`);
+  }
+
+  return { resumen_cambios, detalle_cambios };
+}
+```
+
+El diccionario `ETIQUETA_CAMPO` traduce los nombres internos de los campos a etiquetas en español (`room_id` → `"Habitación"`, `price` → `"Precio"`, etc.). La función auxiliar `valorTextoAuditoria` formatea fechas, booleanos y valores nulos para su presentación.
 
 ---
 
 ### 3. Middleware — `bookingAuditMiddleware.js`
 
-📄 **Ubicación:** `middleware/bookingAuditMiddleware.js`
+**Ubicación:** `middleware/bookingAuditMiddleware.js`
 
-**¿Para qué sirve este archivo?**
-Un middleware es una función que se ejecuta **antes** de que la petición llegue al controlador. Este middleware se encarga de **leer y guardar una foto del estado actual de la reserva** antes de que se modifique. De esta forma, cuando el controlador termine de hacer el cambio, tendremos tanto el "antes" como el "después" para registrar en auditoría.
+Se ejecuta **antes** del controlador para capturar el estado actual de la reserva en MongoDB.
 
-**Funciones que contiene:**
+#### `capturePreviousReservationState`
 
-#### `capturePreviousReservationState` — Para cancelar y actualizar
-
-Se usa **antes** de cancelar o actualizar una reserva. Busca la reserva en la base de datos, la clona, y la deja disponible en `req.bookingAuditPreviousState` para que el controlador la use después.
+Utilizado antes de operaciones de cancelación y actualización. Lee el `reservation_id` del **body** o de los **parámetros de ruta** (para soportar tanto `POST /cancel` como `DELETE /cancel/:reservation_id`):
 
 ```javascript
 async function capturePreviousReservationState(req, res, next) {
-  try {
-    // Obtiene el ID de la reserva del cuerpo de la petición
-    const reservation_id = req.body && req.body.reservation_id;
+  const reservation_id =
+    (req.body && req.body.reservation_id) ||
+    (req.params && req.params.reservation_id);
 
-    if (!reservation_id) {
-      // Si no hay ID, no hay estado previo que capturar
-      req.bookingAuditPreviousState = undefined;
-      return next();  // Continúa al siguiente paso (el controlador)
-    }
-
-    // Busca la reserva actual en MongoDB
-    const doc = await Reservation.findOne({ reservation_id });
-
-    // Guarda una copia del estado actual en el objeto req
-    req.bookingAuditPreviousState = doc ? cloneState(doc) : null;
-
-    next();  // Continúa al controlador
-  } catch (err) {
-    return res.status(500).json({
-      error: 'Error al preparar auditoría',
-      detalle: err.message,
-    });
+  if (!reservation_id) {
+    req.bookingAuditPreviousState = undefined;
+    return next();
   }
+
+  const doc = await Reservation.findOne({ reservation_id });
+  req.bookingAuditPreviousState = doc ? cloneState(doc) : null;
+  next();
 }
 ```
 
-**¿Qué es `req`?** El objeto `req` (request) viaja por toda la cadena de middlewares y controladores. Al guardar datos en `req.bookingAuditPreviousState`, estamos "adjuntando" esa información a la petición para que el controlador pueda usarla más adelante.
+#### `capturePreviousForNewReservation`
 
----
-
-#### `capturePreviousForNewReservation` — Para crear reservas nuevas
-
-Se usa **antes** de crear una reserva nueva. Como la reserva aún no existe, no hay estado previo que capturar, así que simplemente establece `null`.
+Para la creación de reservas, establece `null` como estado previo:
 
 ```javascript
 function capturePreviousForNewReservation(req, res, next) {
-  req.bookingAuditPreviousState = null;  // No hay estado previo
-  next();  // Continúa al controlador
+  req.bookingAuditPreviousState = null;
+  next();
 }
 ```
 
@@ -379,62 +279,36 @@ function capturePreviousForNewReservation(req, res, next) {
 
 ### 4. Controlador — `auditController.js`
 
-📄 **Ubicación:** `controllers/auditController.js`
+**Ubicación:** `controllers/auditController.js`
 
-**¿Para qué sirve este archivo?**
-Es el encargado de **devolver el historial de auditoría** cuando alguien lo consulta. Este es un controlador de **solo lectura**: no crea ni modifica registros de auditoría (eso lo hace `auditService.js`), solo los devuelve.
+Controlador de **solo lectura** que devuelve el historial de auditoría de una reserva.
 
-**Funciones que contiene:**
+#### `getBookingAudit(req, res)`
 
-#### `puedeVerReserva(req, reservaDoc)` — Comprobar permisos
-
-Determina si el usuario que hace la petición tiene permiso para ver la auditoría de una reserva:
-- **Administradores y empleados:** Pueden ver la auditoría de cualquier reserva.
-- **Clientes:** Solo pueden ver la auditoría de sus propias reservas.
+1. Verifica que la reserva exista.
+2. Comprueba permisos: el cliente solo puede ver sus propias reservas; administradores y empleados pueden consultar cualquiera.
+3. Recupera los registros de `booking_audit_log` ordenados cronológicamente.
+4. **Enriquece cada registro** con `resumen_cambios` y `detalle_cambios` mediante `describeReservationAuditChanges`, proporcionando un resumen legible de las diferencias entre estados.
 
 ```javascript
-function puedeVerReserva(req, reservaDoc) {
-  if (!reservaDoc) return false;
-  // Admin y empleados pueden ver todo
-  if (req.user.role === 'admin' || req.user.role === 'employee') return true;
-  // Un cliente solo puede ver sus propias reservas
-  return reservaDoc.user_id === req.user.user_id;
-}
+const listaConResumen = lista.map((doc) => {
+  const { resumen_cambios, detalle_cambios } = describeReservationAuditChanges(
+    doc.previous_state, doc.new_state, doc.action
+  );
+  return { ...doc, resumen_cambios, detalle_cambios };
+});
+res.json(listaConResumen);
 ```
 
----
+Ejemplo de campos añadidos en la respuesta JSON:
 
-#### `getBookingAudit(req, res)` — Obtener el historial de auditoría
-
-Recibe un `reservation_id` como parámetro en la URL, verifica que la reserva exista y que el usuario tenga permisos, y devuelve todos los registros de auditoría de esa reserva ordenados cronológicamente.
-
-```javascript
-async function getBookingAudit(req, res) {
-  try {
-    // 1. Extraer el ID de la reserva de la URL (ej: /reservation/RSV-00001/audit)
-    const { reservation_id } = req.params;
-
-    // 2. Verificar que la reserva existe
-    const reserva = await Reservation.findOne({ reservation_id });
-    if (!reserva) {
-      return res.status(404).json({ error: 'Reserva no encontrada' });
-    }
-
-    // 3. Verificar permisos (dueño o personal)
-    if (!puedeVerReserva(req, reserva)) {
-      return res.status(403).json({ error: 'No autorizado' });
-    }
-
-    // 4. Buscar todos los registros de auditoría para esta reserva
-    const lista = await BookingAuditLog.find({ booking_id: reservation_id })
-      .sort({ timestamp: 1 })   // Ordenar del más antiguo al más reciente
-      .lean();                    // .lean() devuelve objetos JS planos (más rápido)
-
-    // 5. Devolver la lista
-    res.json(lista);
-  } catch (err) {
-    res.status(500).json({ error: 'Error al leer auditoría', detalle: err.message });
-  }
+```json
+{
+  "resumen_cambios": ["Precio: 200 → 50", "Fecha cancelación: — → 2026-05-11 01:18"],
+  "detalle_cambios": [
+    { "campo": "price", "etiqueta": "Precio", "antes": 200, "despues": 50 },
+    { "campo": "cancelation_date", "etiqueta": "Fecha cancelación", "antes": null, "despues": "2026-05-11T01:18:00.000Z" }
+  ]
 }
 ```
 
@@ -442,172 +316,227 @@ async function getBookingAudit(req, res) {
 
 ### 5. Rutas — `reservationRoutes.js`
 
-📄 **Ubicación:** `routes/reservationRoutes.js`
+**Ubicación:** `routes/reservationRoutes.js`
 
-**¿Para qué sirve este archivo?**
-Define las **rutas HTTP** (URLs) que el servidor acepta y conecta cada ruta con su middleware y controlador correspondiente. Aquí se "cablea" todo el sistema de auditoría.
-
-**Fragmento relevante para auditoría:**
+Define las rutas HTTP vinculadas a reservas y auditoría. Todas requieren autenticación (`requireLogin`).
 
 ```javascript
-const {
-  capturePreviousReservationState,
-  capturePreviousForNewReservation,
-} = require('../middleware/bookingAuditMiddleware');
+// Crear reserva
+router.post('/add', capturePreviousForNewReservation, reservationController.addReservation);
 
-// Todas las rutas de reservas requieren estar autenticado
-router.use(requireLogin);
+// Cancelar reserva (dos variantes)
+router.post('/cancel', capturePreviousReservationState, reservationController.cancelReservation);
+router.delete('/cancel/:reservation_id', capturePreviousReservationState, reservationController.cancelReservation);
 
-// CREAR reserva → middleware marca previous_state como null → controlador
-router.post(
-  '/add',
-  capturePreviousForNewReservation,    // Middleware: no hay estado previo
-  reservationController.addReservation, // Controlador: crea y registra auditoría
-);
+// Actualizar reserva
+router.patch('/update', capturePreviousReservationState, reservationController.updateReservation);
 
-// CANCELAR reserva → middleware captura estado actual → controlador
-router.post(
-  '/cancel',
-  capturePreviousReservationState,          // Middleware: guarda estado previo
-  reservationController.cancelReservation,  // Controlador: cancela y registra auditoría
-);
-
-// ACTUALIZAR reserva → middleware captura estado actual → controlador
-router.put(
-  '/update',
-  capturePreviousReservationState,          // Middleware: guarda estado previo
-  reservationController.updateReservation,  // Controlador: actualiza y registra auditoría
-);
-
-// CONSULTAR historial de auditoría → controlador de auditoría
-// Ejemplo: GET /reservation/RSV-00001/audit
+// Consultar auditoría
 router.get('/:reservation_id/audit', auditController.getBookingAudit);
 ```
 
-**¿Cómo funciona el encadenamiento?**
-Cada ruta puede tener varios pasos en cadena. Por ejemplo, al cancelar:
-1. `requireLogin` → Verifica que el usuario esté autenticado.
-2. `capturePreviousReservationState` → Lee la reserva actual y la guarda.
-3. `cancelReservation` → Ejecuta la cancelación y registra la auditoría.
-
-Cada paso llama a `next()` para pasar al siguiente. Si alguno falla, la cadena se detiene.
+**Cambios recientes en las rutas:**
+- Se añadió `DELETE /cancel/:reservation_id` como alternativa al `POST /cancel`, permitiendo que el cliente WPF utilice el verbo HTTP semánticamente correcto.
+- El método de actualización cambió de `PUT` a `PATCH`, ya que las actualizaciones son parciales.
 
 ---
 
 ### 6. Integración en `reservationController.js`
 
-📄 **Ubicación:** `controllers/reservationController.js`
-
-**¿Cómo se conecta el controlador de reservas con la auditoría?**
-El controlador importa las funciones `logBookingChange` y `actorTypeFromRole` del servicio de auditoría, y las llama **después** de que la operación sobre la reserva se complete con éxito.
+El controlador de reservas invoca `logBookingChange` tras cada operación exitosa:
 
 ```javascript
-const { logBookingChange, actorTypeFromRole } = require('../services/auditService');
-```
-
-**Al crear una reserva (`addReservation`):**
-
-```javascript
-// Después de guardar la nueva reserva exitosamente...
-await logBookingChange({
-  booking_id: reservation.reservation_id,  // 'RSV-00001'
-  action: 'CREATED',                       // Se creó una nueva reserva
-  actor_id: req.user.user_id,              // Quién la creó
-  actor_type: actorTypeFromRole(req.user.role),  // 'user' o 'employee'
-  previous_state: req.bookingAuditPreviousState ?? null,  // null (no existía antes)
-  new_state: reservation,                  // La reserva recién creada
-});
-```
-
-**Al cancelar una reserva (`cancelReservation`):**
-
-```javascript
-// Después de marcar la reserva como cancelada...
+// Al crear
 await logBookingChange({
   booking_id: reservation.reservation_id,
-  action: 'CANCELED',
+  action: 'CREATED',
   actor_id: req.user.user_id,
   actor_type: actorTypeFromRole(req.user.role),
-  previous_state: req.bookingAuditPreviousState,  // Estado antes de cancelar
-  new_state: reservation,                          // Estado con cancelation_date
+  previous_state: req.bookingAuditPreviousState ?? null,
+  new_state: reservation,
 });
+
+// Al cancelar → action: 'CANCELED'
+// Al actualizar → action: 'UPDATED'
 ```
 
-**Al actualizar una reserva (`updateReservation`):**
+La función `cancelReservation` fue refactorizada para aceptar el `reservation_id` desde el body (`POST`) o desde los parámetros de ruta (`DELETE`), y el `price` desde el body o desde query string:
 
 ```javascript
-// Después de guardar los cambios...
-await logBookingChange({
-  booking_id: reservation.reservation_id,
-  action: 'UPDATED',
-  actor_id: req.user.user_id,
-  actor_type: actorTypeFromRole(req.user.role),
-  previous_state: req.bookingAuditPreviousState,  // Estado antes de actualizar
-  new_state: reservation,                          // Estado con los nuevos datos
-});
-```
-
-> **Patrón clave:** La auditoría solo se registra **después** de que la operación se complete con éxito. Si la validación falla (por ejemplo, la habitación está ocupada), no se crea ningún registro de auditoría.
-
----
-
-## 📘 Ejemplo completo de flujo
-
-### Escenario: Un empleado cancela la reserva `RSV-00003`
-
-**1. Petición HTTP:**
-```
-POST /reservation/cancel
-Headers: { Authorization: "Bearer <token_del_empleado>" }
-Body: { "reservation_id": "RSV-00003", "price": 50 }
-```
-
-**2. Middleware `capturePreviousReservationState`:**
-- Lee `RSV-00003` de MongoDB.
-- Guarda una copia del estado actual (con `price: 200`, sin `cancelation_date`) en `req.bookingAuditPreviousState`.
-
-**3. Controlador `cancelReservation`:**
-- Valida que la reserva existe y no está ya cancelada.
-- Actualiza `price` a `50` y establece `cancelation_date` con la fecha actual.
-- Guarda los cambios en MongoDB.
-
-**4. Llamada a `logBookingChange`:**
-- Crea un nuevo documento en `booking_audit_log`:
-
-```json
-{
-  "booking_id": "RSV-00003",
-  "action": "CANCELED",
-  "actor_id": "EMP-00001",
-  "actor_type": "employee",
-  "previous_state": {
-    "reservation_id": "RSV-00003",
-    "room_id": "HAB-101",
-    "user_id": "CLI-00002",
-    "check_in": "2026-06-01T12:00:00.000Z",
-    "check_out": "2026-06-05T11:00:00.000Z",
-    "price": 200,
-    "cancelation_date": null
-  },
-  "new_state": {
-    "reservation_id": "RSV-00003",
-    "room_id": "HAB-101",
-    "user_id": "CLI-00002",
-    "check_in": "2026-06-01T12:00:00.000Z",
-    "check_out": "2026-06-05T11:00:00.000Z",
-    "price": 50,
-    "cancelation_date": "2026-05-11T01:18:00.000Z"
-  },
-  "timestamp": "2026-05-11T01:18:00.000Z"
+const reservation_id =
+  (req.body && req.body.reservation_id) || (req.params && req.params.reservation_id);
+let price = req.body && req.body.price;
+if (price === undefined && req.query && req.query.price !== undefined) {
+  price = req.query.price;
 }
 ```
 
-**5. Consultar el historial después:**
-```
-GET /reservation/RSV-00003/audit
-Headers: { Authorization: "Bearer <token>" }
+---
+
+## Módulo de Reseñas
+
+### Descripción
+
+Permite a los clientes valorar habitaciones en las que se han alojado, con una puntuación de 1 a 5 y un comentario de texto.
+
+### Modelo — `Review.js`
+
+Colección `reviews` en MongoDB. Campos principales:
+
+| Campo       | Tipo   | Descripción                                            |
+|-------------|--------|--------------------------------------------------------|
+| `review_id` | String | Identificador único (`REV-xxxxx`)                      |
+| `room_id`   | String | Habitación reseñada                                    |
+| `user_id`   | String | Cliente autor de la reseña                             |
+| `user_name` | String | Nombre completo del cliente (se resuelve en el servidor) |
+| `rating`    | Number | Puntuación entre 1 y 5                                 |
+| `comment`   | String | Texto de la reseña (máx. 2000 caracteres)              |
+
+### Controlador — `reviewController.js`
+
+#### `nextReviewId()`
+
+Genera el siguiente `review_id` consultando directamente la colección `reviews`, sin depender de una colección `counters` auxiliar (eliminada en la refactorización):
+
+```javascript
+async function nextReviewId() {
+  const last = await Review.findOne().sort({ review_id: -1 }).select("review_id").lean();
+  let n = 0;
+  if (last && last.review_id && /^REV-[0-9]{5}$/.test(last.review_id)) {
+    n = parseInt(last.review_id.split("-")[1], 10);
+  }
+  return `REV-${String(n + 1).padStart(5, "0")}`;
+}
 ```
 
-Devuelve un array con **todos** los registros de esa reserva (creación, modificaciones y cancelación), ordenados del más antiguo al más reciente.
+#### `createReview(req, res)`
+
+Validaciones aplicadas antes de insertar:
+1. Campos obligatorios: `room_id`, `rating`, `comment`.
+2. `rating` debe ser un entero entre 1 y 5.
+3. El usuario debe tener al menos una reserva en esa habitación.
+4. No se permite más de una reseña por usuario y habitación.
+5. Se resuelve el `user_name` desde la colección de usuarios.
+
+#### `deleteReview(req, res)`
+
+Permite eliminar una reseña. Solo el autor o un administrador pueden ejecutar la acción.
+
+### Rutas — `reviewRoutes.js`
+
+```javascript
+router.get("/mine",          requireLogin, reviewController.getMyReviews);
+router.get("/room/:roomId",                reviewController.getReviewsByRoom);
+router.post("/create",       requireLogin, reviewController.createReview);
+router.delete("/delete",     requireLogin, reviewController.deleteReview);
+```
+
+La ruta `GET /room/:roomId` es pública (no requiere autenticación) para que las habitaciones puedan mostrar reseñas sin necesidad de login.
+
+---
+
+## Integración con clientes (WPF / Android)
+
+### Cliente WPF (.NET / C#)
+
+El proyecto WPF (`WPF-Intermodular-Ysael`) consume la API mediante `HttpClient` y sigue el patrón MVVM. Los aspectos relevantes de la integración con auditoría:
+
+#### Modelos de auditoría
+
+- **`BookingAuditEntry.cs`** — Deserializa la respuesta de `GET /reservation/{id}/audit`, incluyendo los nuevos campos `resumen_cambios`:
+
+```csharp
+public class BookingAuditEntry
+{
+    [JsonPropertyName("booking_id")]   public string BookingId { get; set; }
+    [JsonPropertyName("action")]       public string Action { get; set; }
+    [JsonPropertyName("actor_id")]     public string ActorId { get; set; }
+    [JsonPropertyName("actor_type")]   public string ActorType { get; set; }
+    [JsonPropertyName("timestamp")]    public DateTime? Timestamp { get; set; }
+    [JsonPropertyName("resumen_cambios")] public List<string> ResumenCambios { get; set; }
+}
+```
+
+- **`HistorialAuditoriaFila.cs`** — Modelo de presentación para la interfaz, con formato de fecha localizado:
+
+```csharp
+public class HistorialAuditoriaFila
+{
+    public string Accion { get; set; }
+    public string ActorId { get; set; }
+    public DateTime? Fecha { get; set; }
+    public string FechaFormateada => Fecha.HasValue ? Fecha.Value.ToString("dd/MM/yyyy HH:mm") : "—";
+    public string ResumenTexto { get; set; }
+}
+```
+
+#### Servicio de reservas (`ReservationService.cs`)
+
+- **`GetBookingAuditAsync`** — Consulta el historial de auditoría de una reserva:
+
+```csharp
+public static async Task<(bool exito, string mensaje, List<BookingAuditEntry> lista)>
+    GetBookingAuditAsync(string reservation_id)
+{
+    string url = $"{ApiService.BaseUrl}reservation/{Uri.EscapeDataString(reservation_id)}/audit";
+    var response = await ApiService._httpClient.GetAsync(url);
+    // Deserializa y devuelve la lista de entradas de auditoría
+}
+```
+
+- **Cancelación** — Utiliza `DELETE /cancel/:reservation_id?price=X` en lugar del anterior `POST /cancel`:
+
+```csharp
+string cancelUrl = $"{ApiService.BaseUrl}reservation/cancel/{Uri.EscapeDataString(r.reservation_id)}?price={priceStr}";
+var response = await ApiService._httpClient.DeleteAsync(cancelUrl);
+```
+
+- **Actualización** — Utiliza `PATCH /update` en lugar del anterior `PUT /update`:
+
+```csharp
+var response = await ApiService._httpClient.PatchAsync(ApiService.BaseUrl + "reservation/update", content);
+```
+
+### Cliente Android (Kotlin)
+
+La aplicación Android corrigió errores en la obtención y creación de reseñas, alineándose con los cambios realizados en la API:
+
+- Adaptación a la nueva ruta `POST /review/create` con el campo `user_name` resuelto en el servidor.
+- Corrección en la obtención de reseñas por habitación (`GET /review/room/:roomId`).
+
+---
+
+## Cambios recientes
+
+### Auditoría — Resumen de diferencias
+
+Se incorporó la función `describeReservationAuditChanges` en `auditService.js` y su integración en `auditController.js`. Ahora la respuesta del endpoint de auditoría incluye `resumen_cambios` (lista de textos legibles como `"Precio: 200 → 50"`) y `detalle_cambios` (array estructurado con campo, valor anterior y valor posterior). Esta información se calcula al vuelo y no se almacena en la base de datos.
+
+### Refactorización de verbos HTTP
+
+| Operación   | Antes                 | Ahora                                      |
+|-------------|-----------------------|--------------------------------------------|
+| Cancelar    | `POST /cancel`        | `POST /cancel` + `DELETE /cancel/:id`      |
+| Actualizar  | `PUT /update`         | `PATCH /update`                            |
+
+El middleware de auditoría fue actualizado para leer el `reservation_id` tanto del body como de los parámetros de ruta.
+
+### Eliminación de archivos
+
+- **`models/Counter.js`** — Eliminado. La generación de IDs para reseñas ahora se realiza consultando directamente la colección `reviews`.
+- **Archivos de test** (`test_create_image_defaults.js`, `test_image.js`, `test_validation.js` y sus salidas) — Eliminados del repositorio.
+
+### Correcciones en reseñas
+
+- **`reviewController.js`** — Refactorizado para eliminar la dependencia del modelo `Counter`. La función `nextReviewId()` calcula el siguiente ID a partir de la última reseña existente.
+- Se añadió validación de reseña duplicada por usuario y habitación.
+- Se incorporó el campo `user_name` (resuelto desde la colección de usuarios) para evitar que el cliente necesite enviarlo.
+- Se añadió el endpoint `DELETE /review/delete` para permitir la eliminación de reseñas por parte del autor o un administrador.
+
+### Integración WPF
+
+- Nuevos modelos `BookingAuditEntry` y `HistorialAuditoriaFila` para la visualización del historial de auditoría en la interfaz de escritorio.
+- `ReservationService.cs` actualizado para utilizar `DELETE` en cancelaciones y `PATCH` en actualizaciones.
+- Método `GetBookingAuditAsync` añadido para consultar la auditoría desde WPF.
 
 ---

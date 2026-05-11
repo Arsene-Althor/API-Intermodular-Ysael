@@ -1,0 +1,36 @@
+### Hotel API — pruebas manuales (Thunder Client / REST Client)
+### Base URL: ajusta si usas otro puerto (ej. si 3000 está ocupado por otro Node: $env:PORT='3011' antes de npm start)
+
+@baseUrl = http://localhost:3000
+
+### 1) Login — sustituye email y password por un usuario real de tu BD
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{
+  "email": "TU_EMAIL",
+  "password": "TU_PASSWORD"
+}
+
+### 2) Historial de auditoría — pega el token del login en Authorization (sin comillas extra)
+# @name audit
+GET {{baseUrl}}/reservation/RSV-00001/audit
+Authorization: Bearer PEGA_AQUI_EL_TOKEN
+
+### 3) Actualizar reserva (PATCH) — cuerpo igual que antes con PUT; requiere token
+PATCH {{baseUrl}}/reservation/update
+Authorization: Bearer PEGA_AQUI_EL_TOKEN
+Content-Type: application/json
+
+{
+  "reservation_id": "RSV-00001",
+  "room_id": "HAB-101",
+  "user_id": "CLI-00001",
+  "check_in": "2026-07-01T12:00:00.000Z",
+  "check_out": "2026-07-05T11:00:00.000Z",
+  "price": 250
+}
+
+### 4) Cancelar (DELETE) — precio final de la reserva en query (misma regla que el POST /cancel)
+DELETE {{baseUrl}}/reservation/cancel/RSV-00001?price=0
+Authorization: Bearer PEGA_AQUI_EL_TOKEN

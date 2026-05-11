@@ -1,0 +1,11 @@
+# MongoDB local opcional. La API sigue usando MONGO_URI del .env (Atlas o esta URL).
+services:
+  mongo:
+    image: mongo:7
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_intermodular:/data/db
+
+volumes:
+  mongo_intermodular:
