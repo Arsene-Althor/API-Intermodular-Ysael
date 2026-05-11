@@ -1,30 +1,5 @@
 # API Proyecto Intermodular
 
-API REST con **Express** y **MongoDB** (Mongoose). Incluye autenticación JWT, gestión de usuarios, habitaciones, reservas y **auditoría de cambios en reservas** (P11).
-
----
-
-## Conexión con MongoDB Atlas
-
-**Sí es apta** para trabajar contra **MongoDB Atlas**. La aplicación usa:
-
-- `mongoose.connect(process.env.MONGO_URI)` en `db.js`
-- Cadena Atlas típica: `mongodb+srv://usuario:contraseña@cluster.xxxxx.mongodb.net/nombreBD?retryWrites=true&w=majority`
-
-### Comprobaciones en Atlas
-
-1. **Usuario de base de datos** con permisos de lectura/escritura en la BD del URI.
-2. **Network Access**: tu IP (o `0.0.0.0/0` solo en desarrollo) permitida.
-3. Variable **`MONGO_URI`** en `.env` (no subir `.env` al repositorio; ya está en `.gitignore`).
-
-### Detalle en Windows
-
-En `db.js` se usa la opción `family: 4` para forzar **IPv4**. En algunos equipos Windows evita fallos de resolución DNS al conectar con Atlas.
-
-### URI bien formada
-
-Revisa que la URL no tenga caracteres extra al final (por ejemplo un `&` colgando tras `majority`). Si la contraseña tiene caracteres especiales, debe ir **codificada en URL** dentro del URI.
-
 ---
 
 ## Puesta en marcha
