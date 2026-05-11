@@ -359,9 +359,6 @@ async function capturePreviousReservationState(req, res, next) {
   }
 }
 ```
-
-**¿Qué es `req`?** El objeto `req` (request) viaja por toda la cadena de middlewares y controladores. Al guardar datos en `req.bookingAuditPreviousState`, estamos "adjuntando" esa información a la petición para que el controlador pueda usarla más adelante.
-
 ---
 
 #### `capturePreviousForNewReservation` — Para crear reservas nuevas
