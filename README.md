@@ -353,6 +353,18 @@ const enriched = reservations.map(r => ({
 | Cancelar    | `POST /cancel`        | `POST /cancel` + `DELETE /cancel/:id`      |
 | Actualizar  | `PUT /update`         | `PATCH /update`                            |
 
+### Acciones de auditoría registradas
+
+Actualmente la API registra las siguientes acciones en `booking_audit_log`:
+
+| Acción     | Se registra cuando…                |
+|------------|------------------------------------|
+| `CREATED`  | Se crea una nueva reserva          |
+| `UPDATED`  | Se modifica una reserva existente  |
+| `CANCELED` | Se cancela una reserva             |
+
+En futuras versiones se prevé ampliar con acciones adicionales (`PAYMENT_RECEIVED`, `CHECK_IN`, `EXTRA_SERVICE`, entre otras). Los clientes Android y WPF ya contemplan estos valores en su lógica de mapeo.
+
 ### Correcciones en reseñas
 
 - `nextReviewId()` sin dependencia de colección `Counter`.
