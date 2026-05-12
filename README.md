@@ -12,6 +12,7 @@ API REST desarrollada con **Node.js**, **Express** y **MongoDB (Mongoose)** para
 - [Tecnologías utilizadas](#tecnologías-utilizadas)
 - [Estructura del proyecto](#estructura-del-proyecto)
 - [Sistema de Auditoría de Reservas](#sistema-de-auditoría-de-reservas)
+- [Gestión de habitaciones](#gestión-de-habitaciones)
 - [Módulo de Reseñas](#módulo-de-reseñas)
 - [Endpoints y verbos HTTP](#endpoints-y-verbos-http)
 - [Cambios recientes](#cambios-recientes)
@@ -29,12 +30,14 @@ Crear un archivo `.env` en la raíz del proyecto:
 | Variable      | Descripción                                   | Ejemplo                              |
 |---------------|-----------------------------------------------|--------------------------------------|
 | `MONGO_URI`   | Cadena de conexión a MongoDB Atlas o local     | `mongodb+srv://user:pass@cluster...` |
-| `PORT`        | Puerto del servidor                            | `3000`                               |
+| `PORT`        | Puerto del servidor (por defecto `3000`)       | `3011`                               |
 | `JWT_SECRET`  | Clave secreta para la firma de tokens JWT      | `clave_secreta_segura`               |
 
 ```bash
 npm start
 ```
+
+El servidor arranca en el puerto definido en `PORT`. Si la variable no está configurada, se utiliza el puerto `3000` por defecto.
 
 ---
 
@@ -92,6 +95,8 @@ API-Intermodular-Ysael/
 │   ├── roomRoutes.js
 │   └── reviewRoutes.js
 │
+├── uploads/                        # Imágenes subidas (Multer)
+│
 └── config/
     └── mailer.js                   # Configuración de Nodemailer
 ```
@@ -131,11 +136,7 @@ Respuesta al cliente
 
 ---
 
-### 1. Modelo — `BookingAuditLog.js`
-
-**Ubicación:** `models/BookingAuditLog.js`
-
-Define el esquema de la colección `booking_audit_log` en MongoDB. Cada documento representa un evento de auditoría.
+### Modelo — `BookingAuditLog.js`
 
 | Campo            | Tipo   | Descripción                                                        |
 |------------------|--------|--------------------------------------------------------------------|
@@ -147,201 +148,119 @@ Define el esquema de la colección `booking_audit_log` en MongoDB. Cada document
 | `new_state`      | Mixed  | Snapshot de la reserva después del cambio                          |
 | `timestamp`      | Date   | Fecha y hora del evento                                            |
 
-El esquema incluye un **índice compuesto** `(booking_id, timestamp)` que optimiza las consultas de historial ordenadas cronológicamente.
+Índice compuesto para optimizar consultas cronológicas:
 
 ```javascript
 bookingAuditLogSchema.index({ booking_id: 1, timestamp: 1 });
 ```
 
----
+### Servicio — `auditService.js`
 
-### 2. Servicio — `auditService.js`
+| Función | Descripción |
+|---------|-------------|
+| `actorTypeFromRole(role)` | Traduce `'client'` → `'user'`, otros → `'employee'` |
+| `cloneState(doc)` | Copia profunda de un documento Mongoose (`JSON.parse(JSON.stringify(...))`) |
+| `logBookingChange({...})` | Inserta un registro de auditoría; si falla, registra el error sin interrumpir la operación |
+| `describeReservationAuditChanges(prev, next, action)` | Compara dos estados campo a campo y genera `resumen_cambios` (textos legibles) y `detalle_cambios` (array estructurado) |
 
-**Ubicación:** `services/auditService.js`
+El resumen de diferencias se calcula al vuelo en cada consulta, no se almacena en la base de datos.
 
-Contiene la lógica reutilizable de auditoría. Exporta las siguientes funciones:
+### Middleware — `bookingAuditMiddleware.js`
 
-#### `actorTypeFromRole(role)`
+- **`capturePreviousReservationState`**: lee el `reservation_id` del body o de los parámetros de ruta y guarda el estado actual en `req.bookingAuditPreviousState`.
+- **`capturePreviousForNewReservation`**: establece `null` como estado previo (para altas).
 
-Traduce el rol de la aplicación al tipo de actor del modelo de auditoría:
+### Controlador — `auditController.js`
 
-```javascript
-function actorTypeFromRole(role) {
-  return role === 'client' ? 'user' : 'employee';
-}
-```
+`getBookingAudit(req, res)`: devuelve el historial de auditoría de una reserva enriquecido con `resumen_cambios` y `detalle_cambios`.
 
-#### `cloneState(doc)`
-
-Genera una copia profunda e independiente de un documento Mongoose para evitar que futuras mutaciones alteren el registro almacenado:
-
-```javascript
-function cloneState(doc) {
-  if (doc == null) return null;
-  const plain = typeof doc.toObject === 'function' ? doc.toObject() : doc;
-  return JSON.parse(JSON.stringify(plain));
-}
-```
-
-#### `logBookingChange({...})`
-
-Inserta un registro en `booking_audit_log`. Si la inserción falla, el error se registra en consola sin interrumpir la operación principal:
-
-```javascript
-const logBookingChange = async ({ booking_id, action, actor_id, actor_type, previous_state, new_state }) => {
-  try {
-    await BookingAuditLog.create({
-      booking_id, action, actor_id, actor_type,
-      previous_state: cloneState(previous_state),
-      new_state:      cloneState(new_state),
-      timestamp:      new Date(),
-    });
-  } catch (error) {
-    console.error(`[Auditoría] Error al guardar log (${booking_id}):`, error.message);
-  }
-};
-```
-
-#### `describeReservationAuditChanges(previous_state, new_state, action)`
-
-Compara el estado anterior y el posterior campo a campo y genera un resumen legible de los cambios. Esta información **no se persiste** en MongoDB; se calcula al vuelo cuando se consulta el historial.
-
-```javascript
-function describeReservationAuditChanges(previous_state, new_state, action) {
-  const resumen_cambios = [];
-  const detalle_cambios = [];
-
-  if (action === 'CREATED' || previous_state == null) {
-    resumen_cambios.push('Alta de reserva (no había estado anterior).');
-    return { resumen_cambios, detalle_cambios };
-  }
-
-  const keys = new Set([...Object.keys(prev), ...Object.keys(sig)]);
-  for (const key of keys) {
-    if (mismoValorAuditoria(antes, despues)) continue;
-    const etiqueta = ETIQUETA_CAMPO[key] || key;
-    detalle_cambios.push({ campo: key, etiqueta, antes, despues });
-    resumen_cambios.push(`${etiqueta}: ${valorAntes} → ${valorDespues}`);
-  }
-
-  return { resumen_cambios, detalle_cambios };
-}
-```
-
-El diccionario `ETIQUETA_CAMPO` traduce nombres internos a etiquetas en español (`room_id` → `"Habitación"`, `price` → `"Precio"`, etc.). La función `valorTextoAuditoria` formatea fechas, booleanos y valores nulos.
-
----
-
-### 3. Middleware — `bookingAuditMiddleware.js`
-
-**Ubicación:** `middleware/bookingAuditMiddleware.js`
-
-Se ejecuta **antes** del controlador para capturar el estado actual de la reserva.
-
-#### `capturePreviousReservationState`
-
-Lee el `reservation_id` del **body** o de los **parámetros de ruta** (para soportar tanto `POST /cancel` como `DELETE /cancel/:reservation_id`):
-
-```javascript
-async function capturePreviousReservationState(req, res, next) {
-  const reservation_id =
-    (req.body && req.body.reservation_id) ||
-    (req.params && req.params.reservation_id);
-
-  if (!reservation_id) {
-    req.bookingAuditPreviousState = undefined;
-    return next();
-  }
-
-  const doc = await Reservation.findOne({ reservation_id });
-  req.bookingAuditPreviousState = doc ? cloneState(doc) : null;
-  next();
-}
-```
-
-#### `capturePreviousForNewReservation`
-
-Para la creación de reservas, establece `null` como estado previo:
-
-```javascript
-function capturePreviousForNewReservation(req, res, next) {
-  req.bookingAuditPreviousState = null;
-  next();
-}
-```
-
----
-
-### 4. Controlador — `auditController.js`
-
-**Ubicación:** `controllers/auditController.js`
-
-Controlador de **solo lectura** que devuelve el historial de auditoría de una reserva.
-
-#### `getBookingAudit(req, res)`
-
-1. Verifica que la reserva exista.
-2. Comprueba permisos: el cliente solo puede ver sus propias reservas; administradores y empleados pueden consultar cualquiera.
-3. Recupera los registros de `booking_audit_log` ordenados cronológicamente.
-4. **Enriquece cada registro** con `resumen_cambios` y `detalle_cambios` mediante `describeReservationAuditChanges`.
-
-```javascript
-const listaConResumen = lista.map((doc) => {
-  const { resumen_cambios, detalle_cambios } = describeReservationAuditChanges(
-    doc.previous_state, doc.new_state, doc.action
-  );
-  return { ...doc, resumen_cambios, detalle_cambios };
-});
-res.json(listaConResumen);
-```
-
-Ejemplo de respuesta JSON:
+Ejemplo de respuesta:
 
 ```json
 {
   "booking_id": "RSV-00003",
   "action": "CANCELED",
-  "actor_id": "USR-00001",
-  "actor_type": "employee",
-  "timestamp": "2026-05-11T01:18:00.000Z",
   "resumen_cambios": ["Precio: 200 → 50", "Fecha cancelación: — → 11/05/2026 01:18"],
   "detalle_cambios": [
-    { "campo": "price", "etiqueta": "Precio", "antes": 200, "despues": 50 },
-    { "campo": "cancelation_date", "etiqueta": "Fecha cancelación", "antes": null, "despues": "2026-05-11T01:18:00.000Z" }
+    { "campo": "price", "etiqueta": "Precio", "antes": 200, "despues": 50 }
   ]
 }
 ```
 
 ---
 
-### 5. Integración en `reservationController.js`
+## Gestión de habitaciones
 
-El controlador de reservas invoca `logBookingChange` tras cada operación exitosa:
+### Modelo — `Room.js`
+
+| Campo             | Tipo    | Descripción                                                                 |
+|-------------------|---------|-----------------------------------------------------------------------------|
+| `room_id`         | String  | Identificador único de la habitación                                        |
+| `type`            | String  | Tipo: `Individual`, `Doble`, `Suite`                                        |
+| `description`     | String  | Descripción de la habitación                                                |
+| `image`           | String  | URL de la imagen (se asigna una por defecto si no se proporciona)           |
+| `price_per_night` | Number  | Precio por noche                                                            |
+| `rate`            | Number  | Valoración (por defecto 0)                                                  |
+| `max_occupancy`   | Number  | Capacidad máxima de huéspedes                                               |
+| `isOperational`   | Boolean | Si la habitación está en servicio (`true`) o fuera de servicio (`false`)     |
+| `isAvailable`     | Boolean | Campo legacy, ya no se edita manualmente                                    |
+
+### Campo `isOperational`
+
+Sustituye al antiguo `isAvailable` para la gestión administrativa. Representa si el hotel puede ofrecer la habitación:
+
+- `true` → la habitación aparece en las búsquedas de clientes y puede reservarse.
+- `false` → fuera de servicio; no se muestra al buscar habitaciones disponibles.
+
+### Campos calculados en la respuesta de `GET /room/all`
+
+La API enriquece la respuesta con dos campos calculados que no se almacenan en la base de datos:
+
+| Campo             | Tipo    | Descripción                                                    |
+|-------------------|---------|----------------------------------------------------------------|
+| `is_operational`  | Boolean | Valor de `isOperational` del documento                         |
+| `is_occupied_now` | Boolean | `true` si existe una reserva activa (no cancelada) en curso    |
 
 ```javascript
-// Al crear
-await logBookingChange({
-  booking_id: reservation.reservation_id,
-  action: 'CREATED',
-  actor_id: req.user.user_id,
-  actor_type: actorTypeFromRole(req.user.role),
-  previous_state: req.bookingAuditPreviousState ?? null,
-  new_state: reservation,
-});
+// roomController.js — getAllRooms
+const overlapping = await Reservation.find({
+  cancelation_date: null,
+  check_in: { $lte: now },
+  check_out: { $gt: now }
+}).select('room_id').lean();
+const occupiedSet = new Set(overlapping.map(r => String(r.room_id).trim()));
 
-// Al cancelar → action: 'CANCELED'
-// Al actualizar → action: 'UPDATED'
+rooms = rooms.map(room => ({
+  ...room,
+  is_operational: room.isOperational !== false,
+  is_occupied_now: occupiedSet.has(String(room.room_id).trim())
+}));
 ```
 
-La función `cancelReservation` acepta el `reservation_id` desde el body (`POST`) o parámetros de ruta (`DELETE`), y el `price` desde el body o query string:
+### Filtro en búsqueda de disponibilidad
+
+`GET /room/available` excluye automáticamente las habitaciones con `isOperational: false`:
 
 ```javascript
-const reservation_id =
-  (req.body && req.body.reservation_id) || (req.params && req.params.reservation_id);
-let price = req.body && req.body.price;
-if (price === undefined && req.query && req.query.price !== undefined) {
-  price = req.query.price;
-}
+const available = await Room.find({
+  isOperational: { $ne: false },
+  max_occupancy: { $gte: Number(guests) },
+  room_id: { $nin: occupiedIds }
+}).lean();
+```
+
+### Imagen de reservas activas
+
+`GET /reservation/allActive` ahora incluye `room_image` en cada reserva, resolviendo la imagen de la habitación asociada:
+
+```javascript
+const roomIds = [...new Set(reservations.map(r => String(r.room_id).trim()))];
+const rooms = await Room.find({ room_id: { $in: roomIds } }).select('room_id image').lean();
+const imgByRoom = Object.fromEntries(rooms.map(r => [String(r.room_id).trim(), r.image]));
+const enriched = reservations.map(r => ({
+  ...r,
+  room_image: imgByRoom[String(r.room_id).trim()] || null
+}));
 ```
 
 ---
@@ -349,8 +268,6 @@ if (price === undefined && req.query && req.query.price !== undefined) {
 ## Módulo de Reseñas
 
 ### Modelo — `Review.js`
-
-Colección `reviews` en MongoDB:
 
 | Campo       | Tipo   | Descripción                                            |
 |-------------|--------|--------------------------------------------------------|
@@ -363,33 +280,9 @@ Colección `reviews` en MongoDB:
 
 ### Controlador — `reviewController.js`
 
-#### `nextReviewId()`
-
-Genera el siguiente `review_id` consultando directamente la colección `reviews`:
-
-```javascript
-async function nextReviewId() {
-  const last = await Review.findOne().sort({ review_id: -1 }).select("review_id").lean();
-  let n = 0;
-  if (last && last.review_id && /^REV-[0-9]{5}$/.test(last.review_id)) {
-    n = parseInt(last.review_id.split("-")[1], 10);
-  }
-  return `REV-${String(n + 1).padStart(5, "0")}`;
-}
-```
-
-#### `createReview(req, res)`
-
-Validaciones:
-1. Campos obligatorios: `room_id`, `rating`, `comment`.
-2. `rating` debe ser un entero entre 1 y 5.
-3. El usuario debe tener al menos una reserva en esa habitación.
-4. No se permite más de una reseña por usuario y habitación.
-5. Se resuelve el `user_name` automáticamente desde la colección de usuarios.
-
-#### `deleteReview(req, res)`
-
-Permite eliminar una reseña. Solo el autor o un administrador pueden ejecutar la acción.
+- **`nextReviewId()`**: genera el siguiente ID consultando la colección `reviews` directamente.
+- **`createReview`**: valida campos, verifica reserva previa, impide duplicados, resuelve `user_name`.
+- **`deleteReview`**: solo el autor o un administrador pueden eliminar.
 
 ---
 
@@ -397,18 +290,28 @@ Permite eliminar una reseña. Solo el autor o un administrador pueden ejecutar l
 
 ### Reservas
 
-| Método   | Ruta                              | Descripción                          | Auth |
-|----------|-----------------------------------|--------------------------------------|------|
-| `POST`   | `/reservation/add`                | Crear una reserva                    | Sí   |
-| `POST`   | `/reservation/cancel`             | Cancelar reserva (body)              | Sí   |
-| `DELETE`  | `/reservation/cancel/:id`        | Cancelar reserva (parámetro de ruta) | Sí   |
-| `PATCH`  | `/reservation/update`             | Actualizar reserva parcialmente      | Sí   |
-| `GET`    | `/reservation/mine`               | Reservas del usuario autenticado     | Sí   |
-| `GET`    | `/reservation/allActive`          | Todas las reservas activas           | Sí   |
-| `GET`    | `/reservation/all`                | Todas las reservas                   | Sí   |
-| `POST`   | `/reservation/getPrice`           | Calcular precio de una reserva       | Sí   |
-| `POST`   | `/reservation/getCancelationPrice`| Calcular penalización por cancelación| Sí   |
-| `GET`    | `/reservation/:id/audit`          | Historial de auditoría de una reserva| Sí   |
+| Método   | Ruta                              | Descripción                              | Auth |
+|----------|-----------------------------------|------------------------------------------|------|
+| `POST`   | `/reservation/add`                | Crear una reserva                        | Sí   |
+| `POST`   | `/reservation/cancel`             | Cancelar reserva (body)                  | Sí   |
+| `DELETE` | `/reservation/cancel/:id`         | Cancelar reserva (parámetro de ruta)     | Sí   |
+| `PATCH`  | `/reservation/update`             | Actualizar reserva parcialmente          | Sí   |
+| `GET`    | `/reservation/mine`               | Reservas del usuario autenticado         | Sí   |
+| `GET`    | `/reservation/allActive`          | Reservas activas (incluye `room_image`)  | Sí   |
+| `GET`    | `/reservation/all`                | Todas las reservas                       | Sí   |
+| `POST`   | `/reservation/getPrice`           | Calcular precio de una reserva           | Sí   |
+| `POST`   | `/reservation/getCancelationPrice`| Calcular penalización por cancelación    | Sí   |
+| `GET`    | `/reservation/:id/audit`          | Historial de auditoría                   | Sí   |
+
+### Habitaciones
+
+| Método   | Ruta                 | Descripción                                              | Auth |
+|----------|----------------------|----------------------------------------------------------|------|
+| `GET`    | `/room/all`          | Todas las habitaciones (con `is_operational`, `is_occupied_now`) | Sí   |
+| `GET`    | `/room/one?id=X`     | Una habitación por ID                                    | Sí   |
+| `GET`    | `/room/available`    | Habitaciones disponibles (filtra `isOperational: false`) | Sí   |
+| `POST`   | `/room/add`         | Crear habitación                                         | Sí   |
+| `PUT`    | `/room/update`       | Actualizar habitación (incluye `isOperational`)          | Sí   |
 
 ### Reseñas
 
@@ -417,23 +320,31 @@ Permite eliminar una reseña. Solo el autor o un administrador pueden ejecutar l
 | `GET`    | `/review/mine`          | Reseñas del usuario autenticado          | Sí   |
 | `GET`    | `/review/room/:roomId`  | Reseñas de una habitación (pública)      | No   |
 | `POST`   | `/review/create`       | Crear una reseña                         | Sí   |
-| `DELETE`  | `/review/delete`       | Eliminar una reseña                      | Sí   |
-
-### Impacto en los clientes
-
-Los cambios en verbos HTTP afectan directamente a las aplicaciones WPF y Android:
-
-- **Cancelación**: ambos clientes utilizan `DELETE /reservation/cancel/:id?price=X` en lugar del anterior `POST /cancel`.
-- **Actualización**: ambos clientes utilizan `PATCH /reservation/update` en lugar del anterior `PUT /update`.
-- **Reseñas**: la API resuelve el `user_name` internamente, por lo que los clientes solo envían `room_id`, `rating` y `comment`.
+| `DELETE` | `/review/delete`        | Eliminar una reseña                      | Sí   |
 
 ---
 
 ## Cambios recientes
 
+### Habitaciones — `isOperational` e `is_occupied_now`
+
+- El campo `isAvailable` se reemplazó por `isOperational` para representar si la habitación está en servicio.
+- `GET /room/all` ahora devuelve `is_operational` e `is_occupied_now` (calculado a partir de reservas activas) para que los clientes puedan mostrar el estado real de cada habitación.
+- `GET /room/available` filtra automáticamente las habitaciones fuera de servicio.
+
+### Reservas activas — `room_image`
+
+- `GET /reservation/allActive` enriquece cada reserva con `room_image`, resolviendo la imagen de la habitación asociada sin necesidad de una segunda petición por parte del cliente.
+
+### Inicialización del servidor
+
+- `dotenv` se carga al inicio del archivo `index.js` (antes de cualquier `require`) para garantizar que las variables de entorno estén disponibles desde el primer momento.
+- El puerto tiene un valor por defecto (`3000`) si `PORT` no está definido en `.env`.
+
 ### Auditoría — Resumen de diferencias
 
-Se incorporó `describeReservationAuditChanges` en `auditService.js`. El endpoint `GET /reservation/:id/audit` ahora incluye `resumen_cambios` y `detalle_cambios` en cada registro.
+- `describeReservationAuditChanges` genera resúmenes legibles campo a campo.
+- El endpoint `GET /reservation/:id/audit` incluye `resumen_cambios` y `detalle_cambios`.
 
 ### Refactorización de verbos HTTP
 
@@ -442,16 +353,9 @@ Se incorporó `describeReservationAuditChanges` en `auditService.js`. El endpoin
 | Cancelar    | `POST /cancel`        | `POST /cancel` + `DELETE /cancel/:id`      |
 | Actualizar  | `PUT /update`         | `PATCH /update`                            |
 
-### Eliminación de archivos
-
-- **`models/Counter.js`** — Eliminado. Los IDs de reseñas se generan consultando la colección `reviews` directamente.
-- **Archivos de test** — Eliminados del repositorio.
-
 ### Correcciones en reseñas
 
-- `nextReviewId()` refactorizado sin dependencia del modelo `Counter`.
-- Validación de reseña duplicada por usuario y habitación.
-- Campo `user_name` resuelto en el servidor.
-- Endpoint `DELETE /review/delete` para eliminación de reseñas.
+- `nextReviewId()` sin dependencia de colección `Counter`.
+- Validación de duplicados, `user_name` resuelto en servidor, endpoint `DELETE /review/delete`.
 
 ---
