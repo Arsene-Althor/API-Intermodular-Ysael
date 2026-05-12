@@ -12,7 +12,7 @@ router.use(requireLogin);
 // Añadir Reserva (estado anterior siempre null)
 router.post('/add', capturePreviousForNewReservation, reservationController.addReservation);
 // Eliminar y modificar reserva (middleware lee estado previo en Mongo)
-router.post('/cancel', capturePreviousReservationState, reservationController.cancelReservation, );
+router.post('/cancel', capturePreviousReservationState, reservationController.cancelReservation);
 router.delete('/cancel/:reservation_id',capturePreviousReservationState, reservationController.cancelReservation);
 router.patch('/update',capturePreviousReservationState, reservationController.updateReservation);
 

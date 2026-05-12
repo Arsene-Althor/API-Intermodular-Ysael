@@ -10,9 +10,10 @@
     -price_per_night: Valor numérico del coste de la noche
     -rate: valoracion de la habitacion, Por defecto empieza en 0
     -max_occupancy: Número máximo de personas permitidas
-    -isAvailable: 
-        - true  → disponible
-        - false → no disponible
+    -isOperational:
+        - true  → el hotel puede ofrecer la habitación (empleado)
+        - false → fuera de servicio; no aparece en búsqueda cliente
+    -isAvailable: (legacy, ya no editable manualmente como "en buen estado")
    ===================================================== */
 
 // Modelo para reservas
@@ -49,6 +50,10 @@ const roomSchema = new mongoose.Schema({
     max_occupancy: {
         type: Number,
         required: true
+    },
+    isOperational: {
+        type: Boolean,
+        default: true
     },
     isAvailable: {
         type: Boolean,

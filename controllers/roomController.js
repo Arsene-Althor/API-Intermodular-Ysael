@@ -40,10 +40,20 @@ async function getRoom(req, res) {
 
 async function getAllRooms(req, res) {
   try {
+    const now = new Date();
+    const overlapping = await Reservation.find({
+      cancelation_date: null,
+      check_in: { $lte: now },
+      check_out: { $gt: now }
+    }).select('room_id').lean();
+    const occupiedSet = new Set(overlapping.map(r => String(r.room_id).trim()));
+
     let rooms = await Room.find().lean();
     rooms = rooms.map(room => ({
       ...room,
-      image: room.image || 'https://images.unsplash.com/photo-1513694203232-719a280e022f?q=80&w=2069&auto=format&fit=crop'
+      image: room.image || 'https://images.unsplash.com/photo-1513694203232-719a280e022f?q=80&w=2069&auto=format&fit=crop',
+      is_operational: room.isOperational !== false,
+      is_occupied_now: occupiedSet.has(String(room.room_id).trim())
     }));
     res.json(rooms);
   } catch (err) {
@@ -67,7 +77,7 @@ async function createRoom(req, res) {
       price_per_night,
       rate,
       max_occupancy,
-      isAvailable
+      isOperational
     } = req.body;
 
     // 1. Validar campos obligatorios (permitiendo valor 0 en numéricos)
@@ -108,7 +118,8 @@ async function createRoom(req, res) {
       price_per_night: Number(price_per_night),
       rate: rate !== undefined ? Number(rate) : 0,
       max_occupancy: parseInt(max_occupancy, 10),
-      isAvailable: isAvailable !== undefined ? Boolean(isAvailable) : true
+      isOperational: isOperational !== undefined ? Boolean(isOperational) : true,
+      isAvailable: true
     };
 
     // 2.1 Verificar NaNs (Extra safety)
@@ -237,6 +248,7 @@ async function getAvailableRooms(req, res) {
     const occupiedIds = overlappingReservations.map(r => String(r.room_id).trim());
 
     const available = await Room.find({
+      isOperational: { $ne: false },
       max_occupancy: { $gte: Number(guests) },
       room_id: { $nin: occupiedIds }
     }).lean();
@@ -277,7 +289,7 @@ async function updateRoom(req, res) {
       price_per_night: req.body.price_per_night,
       rate: req.body.rate,
       max_occupancy: req.body.max_occupancy,
-      isAvailable: req.body.isAvailable,
+      isOperational: req.body.isOperational,
     };
 
     // Limpia undefined
@@ -302,7 +314,7 @@ async function updateRoom(req, res) {
       data.max_occupancy = parseInt(data.max_occupancy, 10); // 👈 int sí o sí
     }
 
-    if (data.isAvailable !== undefined) data.isAvailable = Boolean(data.isAvailable);
+    if (data.isOperational !== undefined) data.isOperational = Boolean(data.isOperational);
 
     const updated = await Room.findOneAndUpdate(
       { room_id: String(room_id).trim() },

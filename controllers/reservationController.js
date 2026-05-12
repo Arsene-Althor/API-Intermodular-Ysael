@@ -197,11 +197,19 @@ async function getActiveReservations(req, res) {
   try{
     let hoy = new Date();
     hoy.setHours(0, 0, 0, 0);
-    const reservations = await Reservation.find({cancelation_date : null, check_out: { $gte: hoy }});
+    const reservations = await Reservation.find({cancelation_date : null, check_out: { $gte: hoy }}).lean();
     if(!reservations || reservations.length === 0){
       return res.status(200).json([]);
     }
-    res.json(reservations)
+    const roomIds = [...new Set(reservations.map(r => String(r.room_id).trim()))];
+    const rooms = await Room.find({ room_id: { $in: roomIds } }).select('room_id image').lean();
+    const imgByRoom = Object.fromEntries(rooms.map(r => [String(r.room_id).trim(), r.image]));
+    const enriched = reservations.map(r => {
+      const rid = String(r.room_id).trim();
+      const img = imgByRoom[rid];
+      return { ...r, room_image: img || null };
+    });
+    res.json(enriched)
 
   }catch(err){
     res.status(500).json({ error: 'Error al listar las reservas', detalle: err.message });

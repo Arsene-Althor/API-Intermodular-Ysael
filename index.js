@@ -1,3 +1,4 @@
+require('dotenv').config();
 
 const express = require('express');
 const session = require('express-session');
@@ -8,7 +9,6 @@ const roomRoutes = require('./routes/roomRoutes');
 const reviewRoutes = require('./routes/reviewRoutes');
 const dbConnection = require('./db');
 const path = require('path');
-require('dotenv').config();
 
 const app = express();
 
@@ -28,8 +28,8 @@ app.use('/review', reviewRoutes);
 //Multer para subida de imagenes
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
-// Puerto
-const PORT = process.env.PORT;
+// Puerto (.env PORT; si falta, 3000)
+const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Servidor escuchando en ${PORT}`);
 });
