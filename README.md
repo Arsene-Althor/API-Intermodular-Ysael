@@ -1,6 +1,6 @@
 # API Proyecto Intermodular — Sistema de Gestión Hotelera
 
-API REST desarrollada con **Node.js**, **Express** y **MongoDB (Mongoose)** para la gestión integral de un hotel: reservas, usuarios, habitaciones y reseñas. Incorpora un **sistema de auditoría** que registra de forma automática cada operación relevante sobre las reservas.
+API REST desarrollada con **Node.js**, **Express** y **MongoDB (Mongoose)** para la gestión integral de un hotel: reservas, usuarios, habitaciones (con **galería**, **ofertas** y **servicios extra**), reseñas y catálogo `ExtraService`. Incorpora un **sistema de auditoría** que registra de forma automática cada operación relevante sobre las reservas.
 
 > Esta API es consumida por dos clientes: una aplicación de escritorio (WPF/.NET) y una aplicación móvil (Android/Kotlin). Cada uno cuenta con su propia documentación en su respectivo repositorio.
 
@@ -69,6 +69,7 @@ API-Intermodular-Ysael/
 │   ├── BookingAuditLog.js          # Registro de auditoría
 │   ├── Reservation.js              # Reservas
 │   ├── Room.js                     # Habitaciones
+│   ├── ExtraService.js             # Catálogo de servicios extra (EXT-xxx)
 │   ├── User.js                     # Usuarios
 │   └── Review.js                   # Reseñas
 │
@@ -78,6 +79,7 @@ API-Intermodular-Ysael/
 │   ├── authController.js           # Autenticación (login / registro)
 │   ├── userController.js           # Gestión de usuarios
 │   ├── roomController.js           # Gestión de habitaciones
+│   ├── extraServiceController.js   # Catálogo GET/POST /room/extra-services
 │   └── reviewController.js         # Gestión de reseñas
 │
 ├── middleware/
@@ -191,77 +193,67 @@ Ejemplo de respuesta:
 
 ## Gestión de habitaciones
 
-### Modelo — `Room.js`
+### Modelo — `Room.js` (persistido en MongoDB)
 
-| Campo             | Tipo    | Descripción                                                                 |
-|-------------------|---------|-----------------------------------------------------------------------------|
-| `room_id`         | String  | Identificador único de la habitación                                        |
-| `type`            | String  | Tipo: `Individual`, `Doble`, `Suite`                                        |
-| `description`     | String  | Descripción de la habitación                                                |
-| `image`           | String  | URL de la imagen (se asigna una por defecto si no se proporciona)           |
-| `price_per_night` | Number  | Precio por noche                                                            |
-| `rate`            | Number  | Valoración (por defecto 0)                                                  |
-| `max_occupancy`   | Number  | Capacidad máxima de huéspedes                                               |
-| `isOperational`   | Boolean | Si la habitación está en servicio (`true`) o fuera de servicio (`false`)     |
-| `isAvailable`     | Boolean | Campo legacy, ya no se edita manualmente                                    |
+| Campo | Tipo | Descripción |
+|-------|------|-------------|
+| `room_id` | String | Identificador único |
+| `type` | String | Ej.: `Individual`, `Doble`, `Suite` |
+| `description` | String | Texto para el cliente |
+| `image` | String | Legacy: una o varias URLs separadas por comas |
+| `images` | `[String]` | Galería explícita; la API fusiona con `image` al serializar |
+| `extra_services` | `[String]` | IDs del catálogo (`EXT-001`, …) asociados a la habitación |
+| `offer_active` | Boolean | Si la oferta aplica |
+| `offer_percent` | Number | Descuento 0–100 sobre `price_per_night` |
+| `price_per_night` | Number | Tarifa base por noche |
+| `rate` | Number | Valoración media (por defecto 0) |
+| `max_occupancy` | Number | Capacidad máxima |
+| `isOperational` | Boolean | `false` = fuera de servicio (no sale en búsqueda cliente) |
+| `isAvailable` | Boolean | Legacy; no usar como fuente de verdad |
 
-### Campo `isOperational`
+### `isOperational`
 
-Sustituye al antiguo `isAvailable` para la gestión administrativa. Representa si el hotel puede ofrecer la habitación:
+- `true` → el hotel puede ofrecer la habitación en apps y en `GET /room/available`.
+- `false` → excluida de disponibilidad y del catálogo cliente.
 
-- `true` → la habitación aparece en las búsquedas de clientes y puede reservarse.
-- `false` → fuera de servicio; no se muestra al buscar habitaciones disponibles.
+### Salida unificada — `normalizeRoomOut`
 
-### Campos calculados en la respuesta de `GET /room/all`
+En `GET /room/all`, `GET /room/one`, `GET /room/available` y en la respuesta de `PUT /room/update`, cada habitación se enriquece con:
 
-La API enriquece la respuesta con dos campos calculados que no se almacenan en la base de datos:
+| Campo | Descripción |
+|-------|-------------|
+| `images` | Array de URLs (fusión de `images[]` + split de `image` legacy, sin duplicados) |
+| `image` | String con todas las URLs unidas por comas (compatibilidad clientes antiguos) |
+| `extra_services` | Lista de IDs de servicios |
+| `is_operational` | Boolean normalizado para el cliente |
+| `is_occupied_now` | `true` si hay reserva activa (no cancelada) con `check_in ≤ ahora < check_out` |
+| `base_price_per_night` | Precio base almacenado |
+| `effective_price_per_night` | Precio mostrado con oferta aplicada si `offer_active` y `offer_percent` válidos |
 
-| Campo             | Tipo    | Descripción                                                    |
-|-------------------|---------|----------------------------------------------------------------|
-| `is_operational`  | Boolean | Valor de `isOperational` del documento                         |
-| `is_occupied_now` | Boolean | `true` si existe una reserva activa (no cancelada) en curso    |
+### Disponibilidad — `GET /room/available`
 
-```javascript
-// roomController.js — getAllRooms
-const overlapping = await Reservation.find({
-  cancelation_date: null,
-  check_in: { $lte: now },
-  check_out: { $gt: now }
-}).select('room_id').lean();
-const occupiedSet = new Set(overlapping.map(r => String(r.room_id).trim()));
+**Query (acepta alias snake_case):**
 
-rooms = rooms.map(room => ({
-  ...room,
-  is_operational: room.isOperational !== false,
-  is_occupied_now: occupiedSet.has(String(room.room_id).trim())
-}));
-```
+| Parámetro | Obligatorio | Descripción |
+|-----------|-------------|-------------|
+| `checkIn` o `check_in` | Sí | Inicio de estancia (`YYYY-MM-DD` o `DD/MM/YYYY`) |
+| `checkOut` o `check_out` | Sí | Fin de estancia |
+| `guests` | No (defecto 1) | Mínimo 1; filtra `max_occupancy >= guests` |
+| `services` o `service_ids` | No | Lista separada por comas de IDs `EXT-xxx`; la habitación debe incluir **todos** |
 
-### Filtro en búsqueda de disponibilidad
+La consulta excluye habitaciones no operativas, sin capacidad suficiente y con solapamiento de reservas en el rango `[checkIn, checkOut)`.
 
-`GET /room/available` excluye automáticamente las habitaciones con `isOperational: false`:
+### Catálogo — `ExtraService.js`
 
-```javascript
-const available = await Room.find({
-  isOperational: { $ne: false },
-  max_occupancy: { $gte: Number(guests) },
-  room_id: { $nin: occupiedIds }
-}).lean();
-```
+| Campo | Descripción |
+|-------|-------------|
+| `service_id` | Identificador único (`EXT-001`, …) |
+| `name` | Nombre legible (ej. Desayuno, Parking) |
+| `active` | Si `false`, no se lista en `GET /room/extra-services` |
 
-### Imagen de reservas activas
+### Reservas activas — imagen de habitación
 
-`GET /reservation/allActive` ahora incluye `room_image` en cada reserva, resolviendo la imagen de la habitación asociada:
-
-```javascript
-const roomIds = [...new Set(reservations.map(r => String(r.room_id).trim()))];
-const rooms = await Room.find({ room_id: { $in: roomIds } }).select('room_id image').lean();
-const imgByRoom = Object.fromEntries(rooms.map(r => [String(r.room_id).trim(), r.image]));
-const enriched = reservations.map(r => ({
-  ...r,
-  room_image: imgByRoom[String(r.room_id).trim()] || null
-}));
-```
+`GET /reservation/allActive` enriquece cada reserva con `room_image` resolviendo la habitación asociada (útil para tarjetas en cliente sin segunda petición).
 
 ---
 
@@ -299,19 +291,22 @@ const enriched = reservations.map(r => ({
 | `GET`    | `/reservation/mine`               | Reservas del usuario autenticado         | Sí   |
 | `GET`    | `/reservation/allActive`          | Reservas activas (incluye `room_image`)  | Sí   |
 | `GET`    | `/reservation/all`                | Todas las reservas                       | Sí   |
-| `POST`   | `/reservation/getPrice`           | Calcular precio de una reserva           | Sí   |
+| `POST`   | `/reservation/getPrice`           | Calcular precio (usa **precio nocturno con oferta** de la habitación) | Sí   |
 | `POST`   | `/reservation/getCancelationPrice`| Calcular penalización por cancelación    | Sí   |
 | `GET`    | `/reservation/:id/audit`          | Historial de auditoría                   | Sí   |
 
 ### Habitaciones
 
-| Método   | Ruta                 | Descripción                                              | Auth |
-|----------|----------------------|----------------------------------------------------------|------|
-| `GET`    | `/room/all`          | Todas las habitaciones (con `is_operational`, `is_occupied_now`) | Sí   |
-| `GET`    | `/room/one?id=X`     | Una habitación por ID                                    | Sí   |
-| `GET`    | `/room/available`    | Habitaciones disponibles (filtra `isOperational: false`) | Sí   |
-| `POST`   | `/room/add`         | Crear habitación                                         | Sí   |
-| `PUT`    | `/room/update`       | Actualizar habitación (incluye `isOperational`)          | Sí   |
+| Método   | Ruta                    | Descripción | Auth |
+|----------|-------------------------|-------------|------|
+| `GET`    | `/room/all`             | Listado con `normalizeRoomOut` (galería, oferta, flags) | Sí   |
+| `GET`    | `/room/one?id=…`        | Detalle por `id` o `room_id` en query (o `body.room_id`) | Sí   |
+| `GET`    | `/room/available`       | Disponibles por fechas, huéspedes y opcionalmente `services` | Sí   |
+| `GET`    | `/room/extra-services`  | Catálogo de servicios extra activos | Sí   |
+| `POST`   | `/room/extra-services`  | Crear servicio (`name`); responde `service_id` tipo `EXT-xxx` | Sí   |
+| `POST`   | `/room/create`          | Crear habitación (incluye `images`, `extra_services`, oferta) | Sí   |
+| `PUT`    | `/room/update`          | Actualizar habitación | Sí   |
+| `DELETE` | `/room/delete`          | Eliminar habitación (`room_id` en body) | Sí   |
 
 ### Reseñas
 
@@ -326,48 +321,25 @@ const enriched = reservations.map(r => ({
 
 ## Cambios recientes
 
-### Habitaciones — `isOperational` e `is_occupied_now`
+### Habitaciones, ofertas y catálogo (2026)
 
-- El campo `isAvailable` se reemplazó por `isOperational` para representar si la habitación está en servicio.
-- `GET /room/all` ahora devuelve `is_operational` e `is_occupied_now` (calculado a partir de reservas activas) para que los clientes puedan mostrar el estado real de cada habitación.
-- `GET /room/available` filtra automáticamente las habitaciones fuera de servicio.
+- **Modelo ampliado**: `images[]`, `extra_services[]`, `offer_active`, `offer_percent`.
+- **Salida unificada** (`normalizeRoomOut`): `images`, `image` (join), `effective_price_per_night`, `base_price_per_night`, `is_operational`, `is_occupied_now`.
+- **`GET /room/one`**: admite `?id=` o `?room_id=` (GET correcto para clientes); mantiene compatibilidad con body legacy.
+- **`GET /room/available`**: parámetros `checkIn`/`checkOut` (o `check_in`/`check_out`), `guests`, filtro opcional `services` (IDs `EXT-xxx` separados por comas).
+- **Catálogo**: modelo `ExtraService`, `GET/POST /room/extra-services` para listar y crear servicios (IDs autogenerados `EXT-001`, …).
+- **Precio de reserva**: `POST /reservation/getPrice` calcula con la tarifa nocturna **efectiva** (oferta aplicada), no solo el precio base.
 
-### Reservas activas — `room_image`
+### Experiencia en clientes (contexto)
 
-- `GET /reservation/allActive` enriquece cada reserva con `room_image`, resolviendo la imagen de la habitación asociada sin necesidad de una segunda petición por parte del cliente.
+Los cambios anteriores permiten a **Android** y **WPF** mostrar galerías, chips de servicios, ofertas y búsquedas alineadas con portales tipo Booking; la documentación detallada de UI está en el README de cada cliente.
 
-### Inicialización del servidor
+### Auditoría, reseñas e infraestructura (resumen)
 
-- `dotenv` se carga al inicio del archivo `index.js` (antes de cualquier `require`) para garantizar que las variables de entorno estén disponibles desde el primer momento.
-- El puerto tiene un valor por defecto (`3000`) si `PORT` no está definido en `.env`.
-
-### Auditoría — Resumen de diferencias
-
-- `describeReservationAuditChanges` genera resúmenes legibles campo a campo.
-- El endpoint `GET /reservation/:id/audit` incluye `resumen_cambios` y `detalle_cambios`.
-
-### Refactorización de verbos HTTP
-
-| Operación   | Antes                 | Ahora                                      |
-|-------------|-----------------------|--------------------------------------------|
-| Cancelar    | `POST /cancel`        | `POST /cancel` + `DELETE /cancel/:id`      |
-| Actualizar  | `PUT /update`         | `PATCH /update`                            |
-
-### Acciones de auditoría registradas
-
-Actualmente la API registra las siguientes acciones en `booking_audit_log`:
-
-| Acción     | Se registra cuando…                |
-|------------|------------------------------------|
-| `CREATED`  | Se crea una nueva reserva          |
-| `UPDATED`  | Se modifica una reserva existente  |
-| `CANCELED` | Se cancela una reserva             |
-
-En futuras versiones se prevé ampliar con acciones adicionales (`PAYMENT_RECEIVED`, `CHECK_IN`, `EXTRA_SERVICE`, entre otras). Los clientes Android y WPF ya contemplan estos valores en su lógica de mapeo.
-
-### Correcciones en reseñas
-
-- `nextReviewId()` sin dependencia de colección `Counter`.
-- Validación de duplicados, `user_name` resuelto en servidor, endpoint `DELETE /review/delete`.
+- Auditoría de reservas: `resumen_cambios` / `detalle_cambios` en `GET /reservation/:id/audit`; acciones `CREATED`, `UPDATED`, `CANCELED`.
+- Reseñas: `nextReviewId` sin colección `Counter`; `DELETE /review/delete`.
+- Reservas activas: campo `room_image` en `GET /reservation/allActive`.
+- Verbos HTTP: cancelación `DELETE /reservation/cancel/:id`; actualización `PATCH /reservation/update`.
+- `dotenv` al inicio de `index.js`; puerto por defecto `3000`.
 
 ---
