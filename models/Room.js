@@ -39,6 +39,27 @@ const roomSchema = new mongoose.Schema({
         required: true,
         default: 'https://images.unsplash.com/photo-1513694203232-719a280e022f?q=80&w=2069&auto=format&fit=crop'
     },
+    /** Varias URLs; si hay datos, la API también rellena `image` como join por comas (legacy app). */
+    images: {
+        type: [String],
+        default: []
+    },
+    /** IDs de servicios extra (p. ej. EXT-001) del catálogo ExtraService. */
+    extra_services: {
+        type: [String],
+        default: []
+    },
+    offer_active: {
+        type: Boolean,
+        default: false
+    },
+    /** Descuento 0–100 sobre price_per_night (precio mostrado = base * (1 - offer_percent/100)). */
+    offer_percent: {
+        type: Number,
+        default: 0,
+        min: 0,
+        max: 100
+    },
     price_per_night: {
         type: Number,
         required: true

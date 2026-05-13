@@ -45,6 +45,19 @@ const reservationSchema = new mongoose.Schema({
         default: null,
         trim: true
     },
+    /** Nº factura fiscal (ej. FAC-2026-00001). Se asigna al completar checkout. */
+    invoice_number: {
+        type: String,
+        default: null,
+        trim: true,
+        sparse: true,
+        unique: true,
+    },
+    /** Marca de tiempo del checkout (emisión de factura). */
+    checkout_completed_at: {
+        type: Date,
+        default: null,
+    },
     createdBy:{
       type: String,
       required: [true, 'El ID del crador es obligatorio'],

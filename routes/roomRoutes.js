@@ -18,10 +18,13 @@
 const express = require('express')
 const router = express.Router();
 const roomController = require('../controllers/roomController')
+const extraServiceController = require('../controllers/extraServiceController')
 
 // Faltan agregar roles de quien puede acceder a las llamadas
 
 router.get('/all', roomController.getAllRooms)
+router.get('/extra-services', extraServiceController.listExtraServices)
+router.post('/extra-services', extraServiceController.createExtraService)
 router.get('/one', roomController.getRoom) 
 router.post('/create', roomController.createRoom)
 router.delete('/delete', roomController.deleteRoom)

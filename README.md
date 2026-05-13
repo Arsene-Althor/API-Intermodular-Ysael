@@ -1,6 +1,6 @@
 # API Proyecto Intermodular — Sistema de Gestión Hotelera
 
-API REST desarrollada con **Node.js**, **Express** y **MongoDB (Mongoose)** para la gestión integral de un hotel: reservas, usuarios, habitaciones (con **galería**, **ofertas** y **servicios extra**), reseñas y catálogo `ExtraService`. Incorpora un **sistema de auditoría** que registra de forma automática cada operación relevante sobre las reservas.
+API REST desarrollada con **Node.js**, **Express** y **MongoDB (Mongoose)** para la gestión integral de un hotel: reservas (incluida **facturación en PDF tras checkout**), usuarios, habitaciones (con **galería**, **ofertas** y **servicios extra**), reseñas y catálogo `ExtraService`. Incorpora un **sistema de auditoría** que registra de forma automática cada operación relevante sobre las reservas.
 
 > Esta API es consumida por dos clientes: una aplicación de escritorio (WPF/.NET) y una aplicación móvil (Android/Kotlin). Cada uno cuenta con su propia documentación en su respectivo repositorio.
 
@@ -14,6 +14,7 @@ API REST desarrollada con **Node.js**, **Express** y **MongoDB (Mongoose)** para
 - [Sistema de Auditoría de Reservas](#sistema-de-auditoría-de-reservas)
 - [Gestión de habitaciones](#gestión-de-habitaciones)
 - [Módulo de Reseñas](#módulo-de-reseñas)
+- [Facturación PDF (factura descargable)](#facturación-pdf-factura-descargable)
 - [Endpoints y verbos HTTP](#endpoints-y-verbos-http)
 - [Ejemplos de peticiones](#ejemplos-de-peticiones)
 - [Evolución del proyecto](#evolución-del-proyecto-desde-la-creación)
@@ -33,6 +34,10 @@ Crear un archivo `.env` en la raíz del proyecto:
 | `MONGO_URI`   | Cadena de conexión a MongoDB Atlas o local     | `mongodb+srv://user:pass@cluster...` |
 | `PORT`        | Puerto del servidor (por defecto `3000`)       | `3011`                               |
 | `JWT_SECRET`  | Clave secreta para la firma de tokens JWT      | `clave_secreta_segura`               |
+| `HOTEL_INVOICE_NAME` | (Opcional) Razón social en el PDF de factura | `Hotel Pere María` |
+| `HOTEL_INVOICE_ADDRESS` | (Opcional) Dirección fiscal en el PDF | `Calle Ejemplo 1, 03001 Alicante` |
+| `HOTEL_INVOICE_CIF` | (Opcional) NIF/CIF del hotel en el PDF | `B12345678` |
+| `INVOICE_IVA_RATE` | (Opcional) Tipo de IVA **decimal** (ej. 10% = `0.10`) | `0.10` |
 
 ```bash
 npm start
@@ -54,6 +59,7 @@ El servidor arranca en el puerto definido en `PORT`. Si la variable no está con
 | dotenv       | Gestión de variables de entorno                 |
 | Multer       | Subida de archivos (imágenes)                   |
 | Nodemailer   | Envío de correos electrónicos                   |
+| **pdfkit**   | Generación de facturas en **PDF** en el servidor |
 
 ---
 
@@ -76,7 +82,8 @@ API-Intermodular-Ysael/
 │
 ├── controllers/
 │   ├── auditController.js          # Consulta de auditoría (solo lectura)
-│   ├── reservationController.js    # CRUD de reservas + escritura de auditoría
+│   ├── reservationController.js    # CRUD de reservas + escritura de auditoría + checkout
+│   ├── invoiceController.js        # PDF factura + histórico facturas
 │   ├── authController.js           # Autenticación (login / registro)
 │   ├── userController.js           # Gestión de usuarios
 │   ├── roomController.js           # Gestión de habitaciones
@@ -89,7 +96,8 @@ API-Intermodular-Ysael/
 │   └── diskStorage.js              # Configuración de Multer
 │
 ├── services/
-│   └── auditService.js             # Lógica de escritura y resumen de auditoría
+│   ├── auditService.js             # Lógica de escritura y resumen de auditoría
+│   └── invoicePdfService.js        # Modelo factura + generación PDF (pdfkit)
 │
 ├── routes/
 │   ├── reservationRoutes.js        # Rutas de reservas (incluye auditoría)
@@ -321,6 +329,137 @@ Las habitaciones guardan en `extra_services` los IDs que elijan desde ese catál
 
 ---
 
+## Facturación PDF (factura descargable)
+
+Esta parte del sistema responde a dos necesidades: que el **cliente** pueda **descargar la factura en PDF** cuando la estancia ya está cerrada fiscalmente, y que el **personal del hotel** pueda **registrar el checkout** y **consultar el histórico** de facturas emitidas.
+
+### Idea en una frase
+
+1. Un empleado o administrador marca la reserva como **checkout completado**.  
+2. El servidor **guarda** un número de factura (`invoice_number`) y la fecha de emisión.  
+3. Cualquier petición válida a **descargar factura** genera el **PDF al momento** (no se guarda el archivo en disco; se envía por HTTP).
+
+### Datos nuevos en MongoDB (`Reservation`)
+
+| Campo | Qué es | Cuándo tiene valor |
+|-------|--------|---------------------|
+| `invoice_number` | Identificador fiscal único, formato `FAC-AAAA-NNNNN` (año + número secuencial por año) | Después de un **checkout** correcto |
+| `checkout_completed_at` | Fecha y hora en que se registró el checkout | Igual que arriba |
+
+Mientras la reserva **no** haya pasado por checkout, `invoice_number` sigue en `null` y **no** se puede descargar factura (la API responde con error claro).
+
+### Flujo paso a paso (orden lógico)
+
+```
+1. Existe una reserva activa (no cancelada), con precio y fechas.
+2. Llega el día: la fecha/hora de salida de la reserva (check_out) ya es pasada.
+3. Un usuario con rol admin o employee llama a POST /reservation/checkout
+   con { "reservation_id": "RSV-xxxxx" }.
+4. La API comprueba reglas (no cancelada, sin factura previa, check_out ≤ ahora),
+   genera el siguiente invoice_number y guarda checkout_completed_at.
+5. Se registra un evento UPDATED en la auditoría de reservas (igual que otras modificaciones).
+6. El cliente (o el personal) pide GET /reservation/RSV-xxxxx/invoice con JWT.
+7. La API lee reserva + usuario + habitación, monta el “modelo de factura”
+   y escribe un PDF en memoria con pdfkit → el navegador o app recibe application/pdf.
+```
+
+### Quién puede hacer qué
+
+| Acción | Roles permitidos | Motivo |
+|--------|------------------|--------|
+| **Checkout** (`POST /reservation/checkout`) | Solo **admin** y **employee** | Es una operación de caja / recepción |
+| **Descargar PDF** (`GET /reservation/.../invoice`) | **Cliente** dueño de la reserva **o** admin/employee | El huésped ve solo sus facturas; el personal puede ayudar o revisar |
+| **Histórico de facturas** (`GET /reservation/invoices/history`) | Solo **admin** y **employee** | Listado interno para gestión |
+
+La regla de “¿puede ver esta reserva?” reutiliza la misma lógica que el resto de reservas: el cliente coincide con `user_id` de la reserva; el personal ve todas.
+
+### Endpoints (resumen práctico)
+
+| Petición | Para qué sirve |
+|----------|----------------|
+| `POST /reservation/checkout` | Cerrar la estancia y **emitir** número de factura |
+| `GET /reservation/:reservation_id/invoice` | **Descargar** el PDF (nombre de archivo tipo `Factura-FAC-2026-00001.pdf`) |
+| `GET /reservation/invoices/history` | **Listar** reservas que ya tienen `invoice_number` (más recientes primero) |
+
+Todas van bajo el prefijo global **`/reservation`** (ver `index.js`) y **exigen JWT** (`Authorization: Bearer ...`), igual que el resto de rutas de reservas.
+
+### Qué lleva el PDF (contenido)
+
+El PDF está pensado como **factura simplificada** legible en papel o móvil:
+
+- Datos del **hotel** (nombre, CIF, dirección — configurables por `.env`).
+- Datos del **cliente** (nombre, apellidos, email, `user_id`).
+- Datos de la **estancia**: código de reserva, habitación, tipo de habitación, fechas de entrada/salida, noches calculadas.
+- **Importes**: se interpreta el campo `price` de la reserva como **total con IVA incluido**. A partir de ahí se calculan **base imponible** e **IVA** usando el tipo configurado (`INVOICE_IVA_RATE`, por defecto 10%).
+
+No se almacena el PDF en `uploads/` ni en GridFS: cada descarga **regenera** el documento a partir de los datos actuales en MongoDB.
+
+### Lógica técnica (pdfkit / `invoicePdfService.js`)
+
+Todo vive en un solo servicio. Resumen alineado con el código:
+
+1. **`buildInvoiceModel(reservation, clientUser, room)`**  
+   Arma un objeto “factura” en memoria (no escribe bytes todavía):
+   - **IVA**: se lee `INVOICE_IVA_RATE` del `.env`, se parsea a número y se **acota entre 0 y 0,99** (evita división absurda o tipos negativos).
+   - **Total TTC**: `reservation.price` numérico; si falta o no es número, se trata como **0**.
+   - **Base e IVA** (asumiendo que el total **ya lleva IVA**):  
+     `base = redondeo( (total / (1 + tasa)) * 100 ) / 100` (dos decimales);  
+     `iva = redondeo( (total − base) * 100 ) / 100`. Así el desglose cuadra con el total guardado.
+   - **Noches**: diferencia en ms entre `check_out` y `check_in`, dividida por un día; **techo** (`ceil`), mínimo **1** noche.
+   - **Fecha de emisión en el PDF**: `checkout_completed_at` de la reserva; si por algún motivo no hubiera valor, cae a `new Date()` en el momento de generar.
+   - Incluye datos de **habitación** (`type`, `description` en el modelo; el dibujo actual usa sobre todo tipo y fechas).
+
+2. **`writeInvoicePdf(doc, model)`**  
+   Usa la API imperativa de **pdfkit**: tamaños de fuente, colores, `moveDown`, bloques en orden (título “FACTURA”, emisor, cliente, estancia, importes, pie de texto legal). No hay plantilla HTML: es texto/posición directa sobre el lienzo PDF.
+
+3. **`streamInvoicePdf(res, filename, reservation, clientUser, room)`**  
+   Punto de entrada que usa el controlador:
+   - Si **no** hay `invoice_number`, lanza error interno `NO_INVOICE` (el controlador lo traduce a respuesta HTTP adecuada).
+   - Construye el **modelo**, **sanitiza** el nombre de archivo (solo caracteres seguros para `Content-Disposition`).
+   - Fija cabeceras **`Content-Type: application/pdf`** y **`Content-Disposition: attachment`** con el nombre acordado.
+   - Crea `new PDFDocument({ margin: 48, info: { Title, Author } })`, hace **`doc.pipe(res)`** para volcar el stream al cuerpo de la respuesta Express, llama a `writeInvoicePdf`, y **`doc.end()`** para cerrar el documento.
+
+En conjunto: **pdfkit** genera un **stream** hacia la respuesta HTTP; no se usa Puppeteer ni HTML→PDF. La “lógica completa” de negocio (IVA, noches, emisión) está en `buildInvoiceModel`; la de presentación, en `writeInvoicePdf`.
+
+### Variables de entorno (todas opcionales para factura)
+
+Si no las defines, el PDF usa textos por defecto razonables para desarrollo:
+
+| Variable | Efecto si la configuras |
+|----------|-------------------------|
+| `HOTEL_INVOICE_NAME` | Nombre comercial o razón social en el encabezado |
+| `HOTEL_INVOICE_ADDRESS` | Dirección fiscal |
+| `HOTEL_INVOICE_CIF` | NIF/CIF del emisor |
+| `INVOICE_IVA_RATE` | Decimal, p. ej. `0.21` para 21% (por defecto `0.10`) |
+
+### Archivos del código (dónde mirar)
+
+| Archivo | Responsabilidad |
+|---------|-----------------|
+| `models/Reservation.js` | Campos `invoice_number`, `checkout_completed_at` |
+| `controllers/reservationController.js` | Función **`checkoutReservation`** + generación secuencial `FAC-AAAA-NNNNN` |
+| `controllers/invoiceController.js` | **`getInvoicePdf`** y **`listInvoiceHistory`** |
+| `services/invoicePdfService.js` | Construcción del modelo de datos y **dibujo del PDF** con **pdfkit** |
+| `routes/reservationRoutes.js` | Registro de rutas (`/checkout`, `/invoices/history`, `/:reservation_id/invoice`) |
+
+### Respuestas de error habituales (sin entrar en código)
+
+- **403 / “No autorizado”**: el JWT es de un cliente que intenta ver la factura de **otro** usuario.
+- **400 / “Factura no disponible”**: aún no se ha hecho checkout (no hay `invoice_number`).
+- **400 en checkout**: reserva cancelada, checkout ya hecho, o **fecha de salida aún no llegada** (no se puede facturar antes de tiempo).
+- **404**: no existe esa `reservation_id`.
+
+### Integración en apps (Android / WPF)
+
+Hoy la lógica vive **solo en la API**. Los clientes móvil y escritorio pueden:
+
+- Mostrar un botón “Descargar factura” si `invoice_number != null` en el JSON de la reserva.
+- Abrir el PDF con una petición GET autenticada o guardar el binario como archivo.
+
+Los detalles de UI quedan en el README de cada cliente cuando se implementen.
+
+---
+
 ## Endpoints y verbos HTTP
 
 ### Reservas
@@ -336,6 +475,9 @@ Las habitaciones guardan en `extra_services` los IDs que elijan desde ese catál
 | `GET`    | `/reservation/all`                | Todas las reservas                       | Sí   |
 | `POST`   | `/reservation/getPrice`           | Calcular precio (usa **precio nocturno con oferta** de la habitación) | Sí   |
 | `POST`   | `/reservation/getCancelationPrice`| Calcular penalización por cancelación    | Sí   |
+| `POST`   | `/reservation/checkout`           | Checkout: asigna `invoice_number` y `checkout_completed_at` | Sí (admin, employee) |
+| `GET`    | `/reservation/invoices/history`    | Histórico de reservas con factura emitida | Sí (admin, employee) |
+| `GET`    | `/reservation/:reservation_id/invoice` | Descarga **PDF** de factura (dueño o personal) | Sí   |
 | `GET`    | `/reservation/:id/audit`          | Historial de auditoría                   | Sí   |
 
 ### Habitaciones
@@ -405,6 +547,23 @@ Authorization: Bearer <token>
 }
 ```
 
+**Checkout y factura PDF:**
+
+```http
+POST /reservation/checkout
+Content-Type: application/json
+Authorization: Bearer <token empleado/admin>
+
+{ "reservation_id": "RSV-00001" }
+```
+
+```http
+GET /reservation/RSV-00001/invoice
+Authorization: Bearer <token>
+```
+
+Variables opcionales en `.env`: `HOTEL_INVOICE_NAME`, `HOTEL_INVOICE_ADDRESS`, `HOTEL_INVOICE_CIF`, `INVOICE_IVA_RATE` (por defecto `0.10`).
+
 ---
 
 ## Evolución del proyecto (desde la creación)
@@ -467,5 +626,9 @@ Los clientes se actualizaron para usar esos verbos.
 
 - Carga de **`dotenv` al inicio** de `index.js` para que `MONGO_URI` y `JWT_SECRET` existan antes de cualquier `require` que los use.
 - **`PORT`** con valor por defecto `3000` si no viene en `.env`.
+
+### 9. Facturación PDF (checkout)
+
+Resumen: campos `invoice_number` y `checkout_completed_at` en `Reservation`; **checkout** solo personal; **PDF bajo demanda** con **pdfkit**; **histórico** para admin/empleado. **Guía paso a paso, permisos, contenido del PDF y variables `.env`:** ver la sección **[Facturación PDF (factura descargable)](#facturación-pdf-factura-descargable)**.
 
 ---

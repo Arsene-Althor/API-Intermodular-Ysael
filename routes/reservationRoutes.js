@@ -3,6 +3,7 @@ const express = require('express');
 const router = express.Router();
 const reservationController = require('../controllers/reservationController');
 const auditController = require('../controllers/auditController');
+const invoiceController = require('../controllers/invoiceController');
 const { requireLogin, requireRole } = require('../middleware/authMiddleware');
 const {capturePreviousReservationState, capturePreviousForNewReservation} = require('../middleware/bookingAuditMiddleware');
 
@@ -25,6 +26,17 @@ router.post('/getCancelationPrice', reservationController.calculateCancelationPr
 router.get('/all', requireRole(['admin', 'employee']), reservationController.getAllReservations);
 router.get('/allActive', requireRole(['admin', 'employee']), reservationController.getActiveReservations);
 router.get('/one', requireRole(['admin', 'employee']), reservationController.getReservation);
+
+// Facturas: rutas fijas antes de /:reservation_id/...
+router.get('/invoices/history', requireRole(['admin', 'employee']), invoiceController.listInvoiceHistory);
+router.post(
+  '/checkout',
+  requireRole(['admin', 'employee']),
+  capturePreviousReservationState,
+  reservationController.checkoutReservation,
+);
+
+router.get('/:reservation_id/invoice', invoiceController.getInvoicePdf);
 
 // Auditoría: /reservation/RSV-xxxxx/audit
 router.get('/:reservation_id/audit', auditController.getBookingAudit);

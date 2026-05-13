@@ -30,6 +30,7 @@ app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 // Puerto (.env PORT; si falta, 3000)
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`Servidor escuchando en ${PORT}`);
+// 0.0.0.0: acepta conexiones desde emulador Android (10.0.2.2) y LAN, no solo localhost.
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`Servidor escuchando en ${PORT} (todas las interfaces)`);
 });

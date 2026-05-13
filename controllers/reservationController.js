@@ -326,7 +326,13 @@ async function calculatePrice(req, res) {
 
     const dias = Math.ceil(diferencia / (1000 * 60 * 60 * 24));
 
-    let precioReserva = dias * room.price_per_night;
+    const base = Number(room.price_per_night) || 0;
+    let nightly = base;
+    if (room.offer_active && room.offer_percent > 0 && room.offer_percent <= 100) {
+      nightly = Math.round(base * (1 - room.offer_percent / 100) * 100) / 100;
+    }
+
+    let precioReserva = dias * nightly;
 
     let descuento = precioReserva * user.discount;
     precioReserva = precioReserva - descuento;
@@ -381,6 +387,67 @@ async function calculateCancelationPrice(req, res) {
 
 }
 
+async function nextInvoiceNumber() {
+  const year = new Date().getFullYear();
+  const esc = String(year);
+  const prefix = `FAC-${esc}-`;
+  const n = await Reservation.countDocuments({
+    invoice_number: { $regex: new RegExp(`^FAC-${esc}-`) },
+  });
+  return `${prefix}${String(n + 1).padStart(5, '0')}`;
+}
+
+/** POST /reservation/checkout — solo personal. Asigna invoice_number y checkout_completed_at. */
+async function checkoutReservation(req, res) {
+  try {
+    const { reservation_id } = req.body;
+    if (!reservation_id) return res.status(400).json({ error: 'Falta reservation_id' });
+
+    const reservation = await Reservation.findOne({ reservation_id });
+    if (!reservation) return res.status(404).json({ error: 'Reserva no encontrada' });
+    if (reservation.cancelation_date != null) {
+      return res.status(400).json({ error: 'No se puede hacer checkout de una reserva cancelada' });
+    }
+    if (reservation.invoice_number) {
+      return res.status(400).json({
+        error: 'Checkout ya registrado',
+        invoice_number: reservation.invoice_number,
+      });
+    }
+
+    const endStay = new Date(reservation.check_out);
+    const now = new Date();
+    if (endStay > now) {
+      return res.status(400).json({
+        error: 'No se puede completar el checkout antes de la fecha/hora de salida de la reserva',
+      });
+    }
+
+    reservation.invoice_number = await nextInvoiceNumber();
+    reservation.checkout_completed_at = now;
+    await reservation.save();
+
+    await logBookingChange({
+      booking_id: reservation.reservation_id,
+      action: 'UPDATED',
+      actor_id: req.user.user_id,
+      actor_type: actorTypeFromRole(req.user.role),
+      previous_state: req.bookingAuditPreviousState,
+      new_state: reservation,
+    });
+
+    return res.json({
+      mensaje: 'Checkout completado',
+      reservation_id: reservation.reservation_id,
+      invoice_number: reservation.invoice_number,
+      checkout_completed_at: reservation.checkout_completed_at,
+    });
+  } catch (err) {
+    console.error('checkoutReservation', err);
+    return res.status(500).json({ error: 'Error en checkout', detalle: err.message });
+  }
+}
+
 module.exports = {
   addReservation,
   cancelReservation,
@@ -391,4 +458,5 @@ module.exports = {
   updateReservation,
   calculatePrice,
   calculateCancelationPrice,
+  checkoutReservation,
 };
