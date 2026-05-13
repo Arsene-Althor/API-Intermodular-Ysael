@@ -15,7 +15,8 @@ API REST desarrollada con **Node.js**, **Express** y **MongoDB (Mongoose)** para
 - [Gestión de habitaciones](#gestión-de-habitaciones)
 - [Módulo de Reseñas](#módulo-de-reseñas)
 - [Endpoints y verbos HTTP](#endpoints-y-verbos-http)
-- [Cambios recientes](#cambios-recientes)
+- [Ejemplos de peticiones](#ejemplos-de-peticiones)
+- [Evolución del proyecto](#evolución-del-proyecto-desde-la-creación)
 
 ---
 
@@ -230,6 +231,38 @@ En `GET /room/all`, `GET /room/one`, `GET /room/available` y en la respuesta de 
 | `base_price_per_night` | Precio base almacenado |
 | `effective_price_per_night` | Precio mostrado con oferta aplicada si `offer_active` y `offer_percent` válidos |
 
+La lógica central está en `controllers/roomController.js`: primero se unen URLs (`collectImageUrls`), luego el precio efectivo y finalmente el objeto que ve el cliente:
+
+```javascript
+function effectiveNightly(room) {
+  const base = Number(room.price_per_night) || 0;
+  const pct = Number(room.offer_percent) || 0;
+  if (room.offer_active && pct > 0 && pct <= 100) {
+    return Math.round(base * (1 - pct / 100) * 100) / 100;
+  }
+  return base;
+}
+
+function normalizeRoomOut(room, occupiedNowSet) {
+  const imgs = collectImageUrls(room);
+  const imageStr = imgs.length ? imgs.join(',') : (room.image || DEFAULT_IMG);
+  const base = Number(room.price_per_night) || 0;
+  const eff = effectiveNightly({ ...room, price_per_night: base });
+  return {
+    ...room,
+    images: imgs,
+    image: imageStr,
+    extra_services: Array.isArray(room.extra_services) ? room.extra_services.map(String) : [],
+    is_operational: room.isOperational !== false,
+    is_occupied_now: occupiedNowSet
+      ? occupiedNowSet.has(String(room.room_id).trim())
+      : false,
+    effective_price_per_night: eff,
+    base_price_per_night: base,
+  };
+}
+```
+
 ### Disponibilidad — `GET /room/available`
 
 **Query (acepta alias snake_case):**
@@ -250,6 +283,16 @@ La consulta excluye habitaciones no operativas, sin capacidad suficiente y con s
 | `service_id` | Identificador único (`EXT-001`, …) |
 | `name` | Nombre legible (ej. Desayuno, Parking) |
 | `active` | Si `false`, no se lista en `GET /room/extra-services` |
+
+**Alta de un servicio** (`POST /room/extra-services`): el cuerpo solo necesita el nombre; el servidor genera el siguiente `EXT-xxx`:
+
+```javascript
+// controllers/extraServiceController.js (resumen)
+const service_id = `EXT-${String(n).padStart(3, '0')}`;
+const doc = await ExtraService.create({ service_id, name, active: true });
+```
+
+Las habitaciones guardan en `extra_services` los IDs que elijan desde ese catálogo; `GET /room/available?...&services=EXT-001,EXT-002` devuelve solo habitaciones que **incluyen todos** esos IDs.
 
 ### Reservas activas — imagen de habitación
 
@@ -319,27 +362,110 @@ La consulta excluye habitaciones no operativas, sin capacidad suficiente y con s
 
 ---
 
-## Cambios recientes
+## Ejemplos de peticiones
 
-### Habitaciones, ofertas y catálogo (2026)
+**Habitación por GET (recomendado para clientes):**
 
-- **Modelo ampliado**: `images[]`, `extra_services[]`, `offer_active`, `offer_percent`.
-- **Salida unificada** (`normalizeRoomOut`): `images`, `image` (join), `effective_price_per_night`, `base_price_per_night`, `is_operational`, `is_occupied_now`.
-- **`GET /room/one`**: admite `?id=` o `?room_id=` (GET correcto para clientes); mantiene compatibilidad con body legacy.
-- **`GET /room/available`**: parámetros `checkIn`/`checkOut` (o `check_in`/`check_out`), `guests`, filtro opcional `services` (IDs `EXT-xxx` separados por comas).
-- **Catálogo**: modelo `ExtraService`, `GET/POST /room/extra-services` para listar y crear servicios (IDs autogenerados `EXT-001`, …).
-- **Precio de reserva**: `POST /reservation/getPrice` calcula con la tarifa nocturna **efectiva** (oferta aplicada), no solo el precio base.
+```http
+GET /room/one?id=HAB-001
+Authorization: Bearer <token>
+```
 
-### Experiencia en clientes (contexto)
+**Disponibilidad con filtro de servicios extra:**
 
-Los cambios anteriores permiten a **Android** y **WPF** mostrar galerías, chips de servicios, ofertas y búsquedas alineadas con portales tipo Booking; la documentación detallada de UI está en el README de cada cliente.
+```http
+GET /room/available?checkIn=2026-06-01&checkOut=2026-06-05&guests=2&services=EXT-001,EXT-002
+Authorization: Bearer <token>
+```
 
-### Auditoría, reseñas e infraestructura (resumen)
+**Crear servicio en catálogo:**
 
-- Auditoría de reservas: `resumen_cambios` / `detalle_cambios` en `GET /reservation/:id/audit`; acciones `CREATED`, `UPDATED`, `CANCELED`.
-- Reseñas: `nextReviewId` sin colección `Counter`; `DELETE /review/delete`.
-- Reservas activas: campo `room_image` en `GET /reservation/allActive`.
-- Verbos HTTP: cancelación `DELETE /reservation/cancel/:id`; actualización `PATCH /reservation/update`.
-- `dotenv` al inicio de `index.js`; puerto por defecto `3000`.
+```http
+POST /room/extra-services
+Content-Type: application/json
+Authorization: Bearer <token>
+
+{ "name": "Desayuno buffet" }
+```
+
+**Respuesta típica** (fragmento) de habitación ya normalizada:
+
+```json
+{
+  "room_id": "HAB-001",
+  "price_per_night": 120,
+  "base_price_per_night": 120,
+  "effective_price_per_night": 96,
+  "offer_active": true,
+  "offer_percent": 20,
+  "images": ["https://...", "https://..."],
+  "extra_services": ["EXT-001"],
+  "is_operational": true,
+  "is_occupied_now": false
+}
+```
+
+---
+
+## Evolución del proyecto (desde la creación)
+
+Esta sección resume **qué se fue añadiendo** al backend a lo largo del proyecto y **para qué sirve**, con referencias de código cuando ayuda a entenderlo.
+
+### 1. Núcleo inicial
+
+- **Autenticación JWT** (`authRoutes`, `authController`), usuarios y habitaciones con CRUD básico.
+- **Reservas**: alta, listados y operaciones sobre `Reservation` con Mongoose.
+- Montaje en `index.js` con prefijos claros, por ejemplo `app.use('/room', roomRoutes)`.
+
+### 2. Habitaciones “en servicio” y ocupación en tiempo real
+
+**Problema:** hacía falta distinguir “habitación rota / cerrada” de “habitación libre u ocupada ahora”.
+
+**Solución:** campo `isOperational` en el modelo y, en las respuestas JSON, flags `is_operational` e `is_occupied_now` calculados cruzando con reservas no canceladas cuya estancia cubre la fecha actual. Así Android y WPF pueden mostrar badges coherentes sin duplicar lógica en el cliente.
+
+`GET /room/available` excluye siempre `isOperational: false` y habitaciones solapadas con otras reservas en el rango pedido.
+
+### 3. Reservas activas con imagen (`room_image`)
+
+**Problema:** las apps mostraban listas de reservas pero obligaban a un segundo fetch por habitación para la foto.
+
+**Solución:** `GET /reservation/allActive` enriquece cada ítem con `room_image` resolviendo `room_id` → documento `Room` (campo `image` / galería unificada en servidor).
+
+### 4. Auditoría de reservas e historial “legible”
+
+**Qué se añadió:** colección `booking_audit_log`, middleware que captura el estado **antes** del cambio (`bookingAuditMiddleware.js`), y tras éxito `logBookingChange` en `auditService.js`.
+
+**Qué gana el usuario final:** `GET /reservation/:id/audit` devuelve cada evento con `resumen_cambios` y `detalle_cambios` generados por `describeReservationAuditChanges` (comparación campo a campo entre snapshots). Un ejemplo de JSON de respuesta aparece en la sección **Controlador — `auditController.js`** de este mismo README.
+
+Acciones registradas hoy: `CREATED`, `UPDATED`, `CANCELED` (el diseño permite ampliar más tipos en el futuro).
+
+### 5. Verbos HTTP y contrato REST más claro
+
+- **Cancelar:** además del body legacy, se soporta `DELETE /reservation/cancel/:id` con el precio de cancelación en query.
+- **Actualizar:** `PATCH /reservation/update` para cambios parciales (más idiomático que un `PUT` completo).
+
+Los clientes se actualizaron para usar esos verbos.
+
+### 6. Reseñas sin colección `Counter`
+
+**Qué se añadió:** `nextReviewId()` consultando la colección `reviews`; validación de duplicados por usuario + habitación; `user_name` resuelto en servidor; borrado con `DELETE /review/delete` restringido a autor o admin.
+
+### 7. Galería, ofertas, servicios extra y precio alineado
+
+**Problema:** una sola URL en `image`, sin ofertas ni extras reutilizables entre habitaciones, y el precio de reserva no reflejaba descuentos.
+
+**Solución en modelo y rutas:**
+
+- `Room`: `images[]`, `extra_services[]`, `offer_active`, `offer_percent`.
+- Modelo `ExtraService` + `GET/POST /room/extra-services` para catálogo centralizado (`EXT-001`, …).
+- **`normalizeRoomOut`**: una sola forma de serializar habitación hacia apps (galería, precio efectivo, flags).
+- **`GET /room/one`**: lectura por query `?id=` o `?room_id=` (adecuado para GET desde HttpClient/Retrofit).
+- **`GET /room/available`**: fechas flexibles (`checkIn`/`check_out`, etc.), `guests`, filtro opcional `services`.
+- **`POST /reservation/getPrice`**: usa la misma regla de **precio nocturno con oferta** que la habitación en BD, para que el total coincida con lo mostrado en catálogo.
+
+### 8. Arranque y configuración
+
+- Carga de **`dotenv` al inicio** de `index.js` para que `MONGO_URI` y `JWT_SECRET` existan antes de cualquier `require` que los use.
+- **`PORT`** con valor por defecto `3000` si no viene en `.env`.
 
 ---
