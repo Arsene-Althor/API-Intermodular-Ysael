@@ -130,7 +130,7 @@ El historial es de **solo lectura**: no existen endpoints para modificar ni elim
 ### Flujo de operación
 
 ```
-Petición HTTP (crear / modificar / cancelar reserva)
+Petición HTTP (crear / modificar / cancelar / checkout de reserva)
        │
        ▼
 Middleware de auditoría → captura el estado ANTERIOR en MongoDB
@@ -144,6 +144,20 @@ Si la operación fue exitosa → logBookingChange() guarda el registro
        ▼
 Respuesta al cliente
 ```
+
+### Rutas que escriben en `booking_audit_log`
+
+Solo se auditan **cambios que llegan a guardarse** en MongoDB. El middleware corre **antes** del controlador; `logBookingChange` corre **después** de un `save()` exitoso.
+
+| Ruta HTTP | Middleware | Controlador | `action` guardada | Notas |
+|-----------|------------|-------------|---------------------|--------|
+| `POST /reservation/add` | `capturePreviousForNewReservation` | `addReservation` | `CREATED` | Estado previo siempre `null`; `new_state` = reserva recién creada. |
+| `POST /reservation/cancel` | `capturePreviousReservationState` | `cancelReservation` | `CANCELED` | `reservation_id` en body. |
+| `DELETE /reservation/cancel/:reservation_id` | igual | igual | `CANCELED` | ID en URL. |
+| `PATCH /reservation/update` | igual | `updateReservation` | `UPDATED` | Cambios de habitación, fechas, cliente, precio. |
+| `POST /reservation/checkout` | igual | `checkoutReservation` | `UPDATED` | **No** hay valor `CHECKOUT` aparte: fiscalmente es una modificación (factura + fecha checkout). En el historial se verán esos campos en `detalle_cambios`. |
+
+**No** pasan por este flujo: listados (`GET /all`, `/mine`, …), cálculo de precios, descarga de factura PDF, ni `GET …/audit` (solo lectura del log).
 
 ---
 
@@ -174,16 +188,30 @@ bookingAuditLogSchema.index({ booking_id: 1, timestamp: 1 });
 | `logBookingChange({...})` | Inserta un registro de auditoría; si falla, registra el error sin interrumpir la operación |
 | `describeReservationAuditChanges(prev, next, action)` | Compara dos estados campo a campo y genera `resumen_cambios` (textos legibles) y `detalle_cambios` (array estructurado) |
 
-El resumen de diferencias se calcula al vuelo en cada consulta, no se almacena en la base de datos.
+El resumen de diferencias se calcula **al vuelo** en cada `GET …/audit`, no se almacena en MongoDB: en la colección solo están `previous_state` y `new_state`.
+
+**Lógica de `describeReservationAuditChanges` (sencilla):**
+
+- Si `action === 'CREATED'` o no hay estado anterior (`null` / ausente), no compara: devuelve un único mensaje del tipo *“Alta de reserva (no había estado anterior)”* y `detalle_cambios` vacío.
+- En el resto de casos toma las claves presentes en **ambos** JSON (unión de campos), **ignora** `_id` y `__v`, y para cada campo distinto (igualdad vía `JSON.stringify`) añade una línea al resumen tipo `Etiqueta: valorAntes → valorDespués`.
+- Las **etiquetas** amigables vienen de un mapa fijo (`Precio`, `Fecha cancelación`, `Habitación`, …); si el campo no está mapeado, se usa el nombre técnico del campo.
+- Fechas en string ISO se formatean de forma compacta para el texto del resumen; otros tipos (número, booleano, objeto) tienen reglas simples de conversión a texto.
+- Si tras comparar no hubo ninguna diferencia (caso raro si los snapshots son coherentes), el resumen indica explícitamente que no hubo diferencias.
+
+**`logBookingChange`:** antes de insertar vuelve a clonar `previous_state` y `new_state` para no guardar referencias vivas a objetos de Mongoose. Si el `create` falla, se escribe en consola y **la petición HTTP ya ha tenido éxito**: la reserva no se revierte (auditoría “best effort”).
 
 ### Middleware — `bookingAuditMiddleware.js`
 
-- **`capturePreviousReservationState`**: lee el `reservation_id` del body o de los parámetros de ruta y guarda el estado actual en `req.bookingAuditPreviousState`.
-- **`capturePreviousForNewReservation`**: establece `null` como estado previo (para altas).
+- **`capturePreviousReservationState`**: obtiene `reservation_id` de `req.body.reservation_id` **o** `req.params.reservation_id` (sirve para `DELETE /cancel/:reservation_id`). Busca la reserva en Mongo y guarda una **copia profunda** del documento actual en `req.bookingAuditPreviousState`. Si no viene ID, deja `req.bookingAuditPreviousState` sin definir; si el ID no existe, guarda `null`. Si falla la lectura, responde **500** y no llega al controlador.
+- **`capturePreviousForNewReservation`**: fija `req.bookingAuditPreviousState = null` (alta: no hay “antes” en base de datos).
 
 ### Controlador — `auditController.js`
 
-`getBookingAudit(req, res)`: devuelve el historial de auditoría de una reserva enriquecido con `resumen_cambios` y `detalle_cambios`.
+`getBookingAudit(req, res)`:
+
+1. Comprueba que la reserva exista y aplica la misma regla **`puedeVerReserva`** que el resto de la API (cliente solo la suya; admin/empleado cualquiera).
+2. Lee todos los documentos de `BookingAuditLog` con ese `booking_id`, ordenados por **`timestamp` ascendente** (cronología real).
+3. Para cada fila del log, llama a `describeReservationAuditChanges` y **añade** `resumen_cambios` y `detalle_cambios` al JSON de respuesta (no se persisten).
 
 Ejemplo de respuesta:
 
@@ -594,9 +622,9 @@ Esta sección resume **qué se fue añadiendo** al backend a lo largo del proyec
 
 **Qué se añadió:** colección `booking_audit_log`, middleware que captura el estado **antes** del cambio (`bookingAuditMiddleware.js`), y tras éxito `logBookingChange` en `auditService.js`.
 
-**Qué gana el usuario final:** `GET /reservation/:id/audit` devuelve cada evento con `resumen_cambios` y `detalle_cambios` generados por `describeReservationAuditChanges` (comparación campo a campo entre snapshots). Un ejemplo de JSON de respuesta aparece en la sección **Controlador — `auditController.js`** de este mismo README.
+**Qué gana el usuario final:** `GET /reservation/:id/audit` devuelve cada evento con `resumen_cambios` y `detalle_cambios` generados por `describeReservationAuditChanges` (comparación campo a campo entre snapshots). Un ejemplo de JSON de respuesta aparece en la sección **Controlador — `auditController.js`** de este mismo README. **Tabla de rutas que escriben log, checkout como `UPDATED` y lógica del resumen:** ver **[Sistema de Auditoría de Reservas](#sistema-de-auditoría-de-reservas)**.
 
-Acciones registradas hoy: `CREATED`, `UPDATED`, `CANCELED` (el diseño permite ampliar más tipos en el futuro).
+Acciones persistidas en `action`: `CREATED`, `UPDATED`, `CANCELED` (el checkout fiscal también se guarda como `UPDATED`: ver tabla *Rutas que escriben en `booking_audit_log`* arriba).
 
 ### 5. Verbos HTTP y contrato REST más claro
 
