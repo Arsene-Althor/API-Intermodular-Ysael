@@ -3,11 +3,7 @@
  */
 const PDFDocument = require('pdfkit');
 const { computeInvoiceBreakdown } = require('./invoiceBreakdownService');
-
-const IVA_RATE = Math.min(0.99, Math.max(0, parseFloat(process.env.INVOICE_IVA_RATE || '0.10')));
-const HOTEL_NAME = process.env.HOTEL_INVOICE_NAME || 'Hotel Pere María';
-const HOTEL_ADDRESS = process.env.HOTEL_INVOICE_ADDRESS || 'Dirección fiscal (configurar HOTEL_INVOICE_ADDRESS en .env)';
-const HOTEL_CIF = process.env.HOTEL_INVOICE_CIF || 'B00000000';
+const { getMergedHotelInvoiceDisplay } = require('./invoiceSettingsService');
 
 function resolveBreakdown(reservation, clientUser, room, extraDocs) {
   if (reservation.invoice_breakdown && typeof reservation.invoice_breakdown === 'object') {
@@ -16,7 +12,9 @@ function resolveBreakdown(reservation, clientUser, room, extraDocs) {
   return computeInvoiceBreakdown(reservation, clientUser, room, extraDocs || []);
 }
 
-function buildInvoiceModel(reservation, clientUser, room, extraDocs) {
+async function buildInvoiceModel(reservation, clientUser, room, extraDocs) {
+  const hotelBlock = await getMergedHotelInvoiceDisplay();
+  const IVA_RATE = hotelBlock.iva_rate;
   const totalTTC = Number(reservation.price) || 0;
   const base = Math.round((totalTTC / (1 + IVA_RATE)) * 100) / 100;
   const iva = Math.round((totalTTC - base) * 100) / 100;
@@ -24,7 +22,12 @@ function buildInvoiceModel(reservation, clientUser, room, extraDocs) {
 
   return {
     invoice_number: reservation.invoice_number,
-    hotel: { name: HOTEL_NAME, address: HOTEL_ADDRESS, cif: HOTEL_CIF },
+    hotel: {
+      name: hotelBlock.name,
+      address: hotelBlock.address,
+      cif: hotelBlock.cif,
+      fiscal_notes: hotelBlock.fiscal_notes || '',
+    },
     client: {
       user_id: clientUser?.user_id || reservation.user_id,
       name: clientUser ? `${clientUser.name || ''} ${clientUser.surname || ''}`.trim() : '—',
@@ -73,6 +76,11 @@ function writeInvoicePdf(doc, m) {
   doc.text(m.hotel.name);
   doc.text(`CIF/NIF: ${m.hotel.cif}`);
   doc.text(`Dirección: ${m.hotel.address}`);
+  if (m.hotel.fiscal_notes && String(m.hotel.fiscal_notes).trim()) {
+    doc.moveDown(0.25);
+    doc.fontSize(9).fillColor('#555').text('Otros datos fiscales / notas:', { continued: false });
+    doc.fontSize(9).fillColor('#444').text(String(m.hotel.fiscal_notes).trim(), { width: 480 });
+  }
   doc.moveDown();
 
   doc.fontSize(12).fillColor('#000').text('Datos del cliente', { underline: true });
@@ -156,13 +164,13 @@ function writeInvoicePdf(doc, m) {
  * @param {import('express').Response} res
  * @param {object[]} [extraDocs] — documentos ExtraService lean (ids de la habitación)
  */
-function streamInvoicePdf(res, filename, reservation, clientUser, room, extraDocs) {
+async function streamInvoicePdf(res, filename, reservation, clientUser, room, extraDocs) {
   if (!reservation.invoice_number) {
     const err = new Error('NO_INVOICE');
     err.code = 'NO_INVOICE';
     throw err;
   }
-  const model = buildInvoiceModel(reservation, clientUser, room, extraDocs);
+  const model = await buildInvoiceModel(reservation, clientUser, room, extraDocs);
   const safe = String(filename).replace(/[^\w.-]+/g, '_');
 
   res.setHeader('Content-Type', 'application/pdf');
@@ -177,9 +185,40 @@ function streamInvoicePdf(res, filename, reservation, clientUser, room, extraDoc
   doc.end();
 }
 
+/**
+ * Genera el mismo PDF que GET /invoice, en memoria (p. ej. adjunto en email).
+ * @returns {Promise<Buffer>}
+ */
+function renderInvoicePdfBuffer(reservation, clientUser, room, extraDocs) {
+  if (!reservation.invoice_number) {
+    const err = new Error('NO_INVOICE');
+    err.code = 'NO_INVOICE';
+    return Promise.reject(err);
+  }
+  return new Promise((resolve, reject) => {
+    buildInvoiceModel(reservation, clientUser, room, extraDocs)
+      .then((model) => {
+        try {
+          const chunks = [];
+          const doc = new PDFDocument({
+            margin: 48,
+            info: { Title: `Factura ${model.invoice_number}`, Author: model.hotel.name },
+          });
+          doc.on('data', (c) => chunks.push(c));
+          doc.on('end', () => resolve(Buffer.concat(chunks)));
+          doc.on('error', reject);
+          writeInvoicePdf(doc, model);
+          doc.end();
+        } catch (e) {
+          reject(e);
+        }
+      })
+      .catch(reject);
+  });
+}
+
 module.exports = {
   buildInvoiceModel,
   streamInvoicePdf,
-  HOTEL_NAME,
-  IVA_RATE,
+  renderInvoicePdfBuffer,
 };

@@ -2,7 +2,8 @@ const Reservation = require('../models/Reservation');
 const User = require('../models/User');
 const Room = require('../models/Room');
 const ExtraService = require('../models/ExtraService');
-const { streamInvoicePdf } = require('../services/invoicePdfService');
+const { streamInvoicePdf, renderInvoicePdfBuffer } = require('../services/invoicePdfService');
+const { sendEmail } = require('../config/mailer');
 
 function puedeVerReserva(req, reservaDoc) {
   if (!reservaDoc) return false;
@@ -73,7 +74,7 @@ async function getInvoicePdf(req, res) {
     const extraDocs = ids.length ? await ExtraService.find({ service_id: { $in: ids } }).lean() : [];
 
     const filename = `Factura-${reservation.invoice_number}.pdf`;
-    streamInvoicePdf(res, filename, reservation, clientUser, room, extraDocs);
+    await streamInvoicePdf(res, filename, reservation, clientUser, room, extraDocs);
   } catch (err) {
     if (err.code === 'NO_INVOICE') {
       return res.status(400).json({ error: 'Sin número de factura' });
@@ -84,6 +85,66 @@ async function getInvoicePdf(req, res) {
     }
     console.error('getInvoicePdf', err);
     return res.status(500).json({ error: 'Error al generar PDF', detalle: err.message });
+  }
+}
+
+/**
+ * POST /reservation/:reservation_id/invoice/email
+ * Solo personal: reenvía el PDF de factura por correo (adjunto). Body opcional: `{ "to": "otro@email.com" }`.
+ */
+async function postInvoiceEmail(req, res) {
+  try {
+    const { reservation_id } = req.params;
+    const reservation = await Reservation.findOne({ reservation_id }).lean();
+    if (!reservation) return res.status(404).json({ error: 'Reserva no encontrada' });
+    if (!reservation.invoice_number) {
+      return res.status(400).json({ error: 'Sin factura emitida para esta reserva' });
+    }
+
+    const clientUser = await User.findOne({ user_id: reservation.user_id })
+      .select('name surname email user_id dni billing_company_name billing_company_cif')
+      .lean();
+
+    const overrideTo = req.body?.to ?? req.body?.email;
+    const to = String(overrideTo || '').trim() || (clientUser && clientUser.email);
+    if (!to) {
+      return res.status(400).json({
+        error: 'Sin destinatario',
+        detalle: 'El usuario de la reserva no tiene email o el body no incluye "to".',
+      });
+    }
+
+    const room = await Room.findOne({ room_id: reservation.room_id })
+      .select('type description room_id price_per_night offer_active offer_percent extra_services')
+      .lean();
+
+    const ids = Array.isArray(room?.extra_services) ? room.extra_services.map(String).filter(Boolean) : [];
+    const extraDocs = ids.length ? await ExtraService.find({ service_id: { $in: ids } }).lean() : [];
+
+    const buf = await renderInvoicePdfBuffer(reservation, clientUser, room, extraDocs);
+    const safeName = `Factura-${String(reservation.invoice_number).replace(/[^\w.-]+/g, '_')}.pdf`;
+
+    const nombre = clientUser ? `${clientUser.name || ''} ${clientUser.surname || ''}`.trim() : 'Cliente';
+    const html = `<p>Hola${nombre ? ` ${nombre}` : ''},</p><p>Adjuntamos la factura <strong>${reservation.invoice_number}</strong> correspondiente a la reserva <strong>${reservation.reservation_id}</strong>.</p><p>Saludos,<br/>Hotel Pere María</p>`;
+
+    const sent = await sendEmail(to, `Factura ${reservation.invoice_number}`, html, [
+      { filename: safeName, content: buf },
+    ]);
+    if (!sent) {
+      return res.status(502).json({ error: 'No se pudo enviar el correo', detalle: 'Revisar EMAIL_HOST / EMAIL_USER / EMAIL_PASS en .env' });
+    }
+    return res.json({
+      mensaje: 'Correo enviado',
+      to,
+      invoice_number: reservation.invoice_number,
+      reservation_id: reservation.reservation_id,
+    });
+  } catch (err) {
+    if (err.code === 'NO_INVOICE') {
+      return res.status(400).json({ error: 'Sin número de factura' });
+    }
+    console.error('postInvoiceEmail', err);
+    return res.status(500).json({ error: 'Error al enviar factura por email', detalle: err.message });
   }
 }
 
@@ -149,6 +210,7 @@ async function listInvoiceHistory(req, res) {
 module.exports = {
   getBillingInfo,
   getInvoicePdf,
+  postInvoiceEmail,
   listInvoicesByUser,
   listInvoiceHistory,
 };

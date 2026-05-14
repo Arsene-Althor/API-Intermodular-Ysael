@@ -38,6 +38,11 @@ router.post(
 
 router.get('/:reservation_id/billing-info', invoiceController.getBillingInfo);
 router.get('/:reservation_id/invoice', invoiceController.getInvoicePdf);
+router.post(
+  '/:reservation_id/invoice/email',
+  requireRole(['admin', 'employee']),
+  invoiceController.postInvoiceEmail,
+);
 
 // Auditoría: /reservation/RSV-xxxxx/audit
 router.get('/:reservation_id/audit', auditController.getBookingAudit);

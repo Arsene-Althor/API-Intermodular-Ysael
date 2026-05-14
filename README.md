@@ -72,7 +72,7 @@ El servidor arranca en el puerto definido en `PORT`. Si la variable no está con
 
 ```
 API-Intermodular-Ysael/
-├── index.js                        # Punto de entrada (`/auth`, `/reservation`, `/invoices`, …)
+├── index.js                        # Punto de entrada (`/auth`, `/reservation`, `/invoices`, `/settings`, …)
 ├── db.js                           # Conexión a MongoDB
 ├── package.json
 ├── .env                            # Variables de entorno (no versionado)
@@ -83,12 +83,14 @@ API-Intermodular-Ysael/
 │   ├── Room.js                     # Habitaciones
 │   ├── ExtraService.js             # Catálogo de servicios extra (EXT-xxx)
 │   ├── User.js                     # Usuarios
-│   └── Review.js                   # Reseñas
+│   ├── Review.js                   # Reseñas
+│   └── InvoiceSettings.js         # Datos fiscales emisor (documento único; override .env)
 │
 ├── controllers/
 │   ├── auditController.js          # Consulta de auditoría (solo lectura)
 │   ├── reservationController.js    # CRUD de reservas + escritura de auditoría + checkout
 │   ├── invoiceController.js        # PDF factura + listados (`/invoices`, histórico)
+│   ├── invoiceSettingsController.js # GET/PUT `/settings/invoice`
 │   ├── authController.js           # Autenticación (login / registro)
 │   ├── userController.js           # Gestión de usuarios
 │   ├── roomController.js           # Gestión de habitaciones
@@ -104,11 +106,13 @@ API-Intermodular-Ysael/
 │   ├── auditService.js             # Lógica de escritura y resumen de auditoría
 │   ├── invoiceNumberService.js     # Numeración automática invoice_number (.env)
 │   ├── invoiceBreakdownService.js  # Desglose noches / oferta habitación / dto cliente / extras
-│   └── invoicePdfService.js        # Modelo factura + generación PDF (pdfkit)
+│   ├── invoicePdfService.js        # Modelo factura + generación PDF (pdfkit)
+│   └── invoiceSettingsService.js   # Merge BD + `.env` para cabecera fiscal PDF
 │
 ├── routes/
 │   ├── reservationRoutes.js        # Rutas de reservas (incluye auditoría)
 │   ├── invoiceRoutes.js            # GET /invoices?userId= (facturas por cliente)
+│   ├── settingsRoutes.js           # GET/PUT `/settings/invoice`
 │   ├── authRoutes.js
 │   ├── userRoutes.js
 │   ├── roomRoutes.js
@@ -420,6 +424,7 @@ Mientras la reserva **no** haya pasado por checkout, `invoice_number` sigue en `
 | **Descargar PDF** (`GET /reservation/.../invoice`) | **Cliente** dueño de la reserva **o** admin/employee | El huésped ve solo sus facturas; el personal puede ayudar o revisar |
 | **Histórico global** (`GET /reservation/invoices/history`) | Solo **admin** y **employee** | Todas las reservas con factura (gestión interna) |
 | **Facturas por usuario** (`GET /invoices?userId=…`) | **Cliente** (solo su `userId`) o **admin/empleado** (cualquier `userId`) | Lista reservas con `invoice_number` en colección **Reservation** |
+| **Reenviar factura por email** (`POST /reservation/.../invoice/email`) | Solo **admin** y **employee** | Genera el PDF en servidor y lo adjunta (Nodemailer); destino = email del cliente o `to` en body |
 | **Info facturación / pasarela ficticia** (`GET /reservation/.../billing-info`) | Dueño o personal | JSON: sin cobro real, si hay factura y ruta relativa de descarga |
 
 La regla de “¿puede ver esta reserva?” reutiliza la misma lógica que el resto de reservas: el cliente coincide con `user_id` de la reserva; el personal ve todas.
@@ -433,6 +438,7 @@ La regla de “¿puede ver esta reserva?” reutiliza la misma lógica que el re
 | `POST /reservation/checkout` | Cerrar la estancia, **emitir** número de factura y guardar **`invoice_breakdown`** |
 | `GET /reservation/:reservation_id/billing-info` | Estado de factura y mensaje de pasarela **ficticia** (sin cobro) |
 | `GET /reservation/:reservation_id/invoice` | **Descargar** el PDF (nombre de archivo tipo `Factura-FAC-2026-0001.pdf`) |
+| `POST /reservation/:reservation_id/invoice/email` | **Reenviar** el PDF por correo al cliente (body opcional `{ "to": "..." }`; solo **admin/empleado**; requiere SMTP en `.env`) |
 | `GET /reservation/invoices/history` | **Listar** todas las reservas con factura (admin/empleado) |
 | `GET /invoices?userId=CLI-xxxxx` | **Listar** reservas con factura **de un usuario** (misma query con `user_id`) |
 
@@ -457,7 +463,7 @@ No se almacena el PDF en `uploads/` ni en GridFS: cada descarga **regenera** el 
 
 **`services/invoicePdfService.js`:**
 
-1. **`buildInvoiceModel(..., extraDocs)`** — Usa `reservation.invoice_breakdown` si existe; si no (reservas antiguas), **recalcula** el mismo objeto con `computeInvoiceBreakdown`. Añade bloques hotel/cliente/estancia, totales IVA/TTC y referencia al desglose.
+1. **`buildInvoiceModel` (async, …, extraDocs)** — Carga cabecera hotel con **`invoiceSettingsService`** (Mongo + fallback `.env`). Usa `reservation.invoice_breakdown` si existe; si no (reservas antiguas), **recalcula** el mismo objeto con `computeInvoiceBreakdown`. Añade bloques hotel/cliente/estancia, totales IVA/TTC y referencia al desglose.
 2. **`writeInvoicePdf(doc, model)`** — **pdfkit**: emisor, cliente (DNI + empresa opcional), estancia, tabla de conceptos (alojamiento, descuentos, extras, ajuste), bloque impuestos/total y pie de **pasarela ficticia**.
 3. **`streamInvoicePdf(..., extraDocs)`** — Cabeceras PDF, `doc.pipe(res)`, `doc.end()`; nombre de archivo sanitizado.
 
@@ -480,10 +486,13 @@ Si no las defines, el PDF usa textos por defecto razonables para desarrollo:
 |---------|-----------------|
 | `models/Reservation.js` | `invoice_number`, `checkout_completed_at`, **`invoice_breakdown`** |
 | `models/ExtraService.js` | Campo **`price`** (TTC en factura por servicio) |
-| `models/User.js` | **`billing_company_name`**, **`billing_company_cif`** (opcionales) |
+| `models/InvoiceSettings.js` | Overrides opcionales de cabecera fiscal + IVA (fusionados con `.env` en PDF) |
+| `controllers/invoiceSettingsController.js` | **`getInvoiceSettings`**, **`putInvoiceSettings`** |
+| `services/invoiceSettingsService.js` | Lectura/escritura documento único + merge con `.env` |
+| `routes/settingsRoutes.js` | Prefijo `/settings` en `index.js` |
 | `controllers/reservationController.js` | **`checkoutReservation`**: desglose + **`nextInvoiceNumber`** (servicio dedicado) |
 | `services/invoiceNumberService.js` | Formato configurable y siguiente `invoice_number` |
-| `controllers/invoiceController.js` | **`getInvoicePdf`**, **`getBillingInfo`**, **`listInvoicesByUser`**, **`listInvoiceHistory`** |
+| `controllers/invoiceController.js` | **`getInvoicePdf`**, **`postInvoiceEmail`**, **`getBillingInfo`**, **`listInvoicesByUser`**, **`listInvoiceHistory`** |
 | `services/invoiceBreakdownService.js` | Cálculo del desglose (checkout y PDF legacy) |
 | `services/invoicePdfService.js` | Modelo + **pdfkit** |
 | `routes/reservationRoutes.js` | `billing-info` antes de `invoice` (orden de rutas) |
@@ -527,6 +536,7 @@ Los detalles de UI quedan en el README de cada cliente cuando se implementen.
 | `GET`    | `/reservation/invoices/history`    | Histórico de reservas con factura emitida | Sí (admin, employee) |
 | `GET`    | `/reservation/:reservation_id/billing-info` | Pasarela **ficticia**: JSON con estado de factura y ruta de descarga | Sí   |
 | `GET`    | `/reservation/:reservation_id/invoice` | Descarga **PDF** de factura (dueño o personal) | Sí   |
+| `POST`   | `/reservation/:reservation_id/invoice/email` | Reenviar factura por **correo** (PDF adjunto; solo admin/empleado) | Sí (admin, employee) |
 | `GET`    | `/reservation/:id/audit`          | Historial de auditoría                   | Sí   |
 
 ### Facturas (`/invoices`)
@@ -624,6 +634,18 @@ GET /reservation/RSV-00001/invoice
 Authorization: Bearer <token>
 ```
 
+**Reenvío de factura por correo** (personal; requiere `EMAIL_*` en `.env` del servidor):
+
+```http
+POST /reservation/RSV-00001/invoice/email
+Authorization: Bearer <token empleado/admin>
+Content-Type: application/json
+
+{}
+```
+
+Opcional: `{ "to": "otro@correo.com" }` para anular el email del cliente.
+
 **Listado de facturas por cliente** (colección `Reservation`, no hay colección `invoices` aparte):
 
 ```http
@@ -633,7 +655,32 @@ Authorization: Bearer <token>
 
 Respuesta JSON: `{ "user_id", "count", "reservations": [ ... ] }` (mismos campos útiles que el histórico admin por ítem).
 
-Variables opcionales en `.env`: `HOTEL_INVOICE_NAME`, `HOTEL_INVOICE_ADDRESS`, `HOTEL_INVOICE_CIF`, `INVOICE_IVA_RATE` (por defecto `0.10`).
+Variables opcionales en `.env`: `HOTEL_INVOICE_NAME`, `HOTEL_INVOICE_ADDRESS`, `HOTEL_INVOICE_CIF`, `INVOICE_IVA_RATE` (por defecto `0.10`). Si existen valores en la colección **`InvoiceSettings`** (documento único), **tienen prioridad** sobre el `.env` para nombre, CIF, dirección, notas fiscales e IVA (WPF: pantalla *Datos factura*).
+
+**Configuración fiscal del emisor** (admin/empleado; persiste en MongoDB, usada al generar PDF):
+
+```http
+GET /settings/invoice
+Authorization: Bearer <token empleado/admin>
+```
+
+Respuesta: `{ "hotel_commercial_name", "hotel_cif", "hotel_address", "fiscal_notes", "iva_rate" }` (valores **efectivos** tras fusionar BD + `.env`).
+
+```http
+PUT /settings/invoice
+Authorization: Bearer <token empleado/admin>
+Content-Type: application/json
+
+{
+  "hotel_commercial_name": "Hotel Ejemplo S.L.",
+  "hotel_cif": "B12345678",
+  "hotel_address": "Calle Mayor 1, 03001 Alicante",
+  "fiscal_notes": "Inscripción RM de Alicante, Tomo X...",
+  "iva_rate": 0.10
+}
+```
+
+Respuesta: `{ "ok": true, "settings": { ...misma forma que GET... } }`. Campos de texto vacíos en BD hacen fallback a `.env` para nombre/CIF/dirección; `fiscal_notes` solo sale en el PDF si no está vacío. `iva_rate` en `null` en BD (no enviar o borrar en futuras extensiones) usa solo `INVOICE_IVA_RATE` del `.env`; el WPF siempre envía un decimal (p. ej. `0.10`).
 
 ---
 
@@ -700,6 +747,6 @@ Los clientes se actualizaron para usar esos verbos.
 
 ### 9. Facturación PDF (checkout)
 
-Resumen: campos `invoice_number`, `checkout_completed_at` e **`invoice_breakdown`**; **checkout** solo personal; **PDF** con desglose P5; **`GET /invoices?userId=`** lista facturas por usuario sobre **`Reservation`** (sin colección aparte); **`GET …/billing-info`** pasarela ficticia; **`GET /reservation/invoices/history`** todo el histórico admin/empleado. **Detalle:** ver **[Facturación PDF (factura descargable)](#facturación-pdf-factura-descargable)**.
+Resumen: campos `invoice_number`, `checkout_completed_at` e **`invoice_breakdown`**; **checkout** solo personal; **PDF** con desglose P5; **`POST /reservation/:id/invoice/email`** reenvío del PDF por **SMTP** (Nodemailer, adjunto); **`GET /invoices?userId=`** facturas por usuario en **`Reservation`**; **`GET …/billing-info`** pasarela ficticia; **`GET /reservation/invoices/history`** histórico global admin/empleado. **Detalle:** ver **[Facturación PDF (factura descargable)](#facturación-pdf-factura-descargable)**.
 
 ---

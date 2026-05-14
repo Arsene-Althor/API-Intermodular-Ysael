@@ -22,15 +22,24 @@ transporter.verify().then(() => {
     console.log('Error al conectar con el servidor de correos:', err);
 });
 
-// Funcion para enviar correos
-async function sendEmail(to, subject, htmlContent){
+/**
+ * @param {string} to
+ * @param {string} subject
+ * @param {string} htmlContent
+ * @param {{ filename: string, content: Buffer }[]=} attachments opcional (nodemailer)
+ */
+async function sendEmail(to, subject, htmlContent, attachments) {
     try{
-        const info = await transporter.sendMail({
+        const mail = {
             from: `"Hotel Pere Maria" <${process.env.EMAIL_USER}>`, 
             to: to, 
             subject: subject,
             html: htmlContent 
-        });
+        };
+        if (attachments && attachments.length > 0) {
+            mail.attachments = attachments;
+        }
+        const info = await transporter.sendMail(mail);
         console.log("Correo enviado: %s", info.messageId);
         console.log("Vista previa URL: %s", nodemailer.getTestMessageUrl(info));
         return true;
