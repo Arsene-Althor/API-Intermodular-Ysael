@@ -49,6 +49,9 @@ const ETIQUETA_CAMPO = {
   createdBy: 'Creado por',
   createdAt: 'Creado el',
   updatedAt: 'Actualizado el',
+  invoice_breakdown: 'Desglose factura',
+  invoice_number: 'Nº factura',
+  checkout_completed_at: 'Checkout completado',
 };
 
 function valorTextoAuditoria(val) {

@@ -3,6 +3,11 @@ const Reservation = require('../models/Reservation');
 const User = require('../models/User');
 const Room = require('../models/Room');
 const { logBookingChange, actorTypeFromRole } = require('../services/auditService');
+const {
+  computeInvoiceBreakdown,
+  loadExtraDocsForRoom,
+} = require('../services/invoiceBreakdownService');
+const { nextInvoiceNumber } = require('../services/invoiceNumberService');
 
 // Quién puede ver o tocar una reserva concreta (dueño del cliente o personal)
 function puedeVerReserva(req, reservaDoc) {
@@ -387,16 +392,6 @@ async function calculateCancelationPrice(req, res) {
 
 }
 
-async function nextInvoiceNumber() {
-  const year = new Date().getFullYear();
-  const esc = String(year);
-  const prefix = `FAC-${esc}-`;
-  const n = await Reservation.countDocuments({
-    invoice_number: { $regex: new RegExp(`^FAC-${esc}-`) },
-  });
-  return `${prefix}${String(n + 1).padStart(5, '0')}`;
-}
-
 /** POST /reservation/checkout — solo personal. Asigna invoice_number y checkout_completed_at. */
 async function checkoutReservation(req, res) {
   try {
@@ -423,7 +418,12 @@ async function checkoutReservation(req, res) {
       });
     }
 
-    reservation.invoice_number = await nextInvoiceNumber();
+    const clientUser = await User.findOne({ user_id: reservation.user_id }).lean();
+    const roomDoc = await Room.findOne({ room_id: reservation.room_id }).lean();
+    const extraDocs = await loadExtraDocsForRoom(roomDoc);
+    reservation.invoice_breakdown = computeInvoiceBreakdown(reservation, clientUser, roomDoc, extraDocs);
+
+    reservation.invoice_number = await nextInvoiceNumber(now);
     reservation.checkout_completed_at = now;
     await reservation.save();
 
@@ -441,6 +441,7 @@ async function checkoutReservation(req, res) {
       reservation_id: reservation.reservation_id,
       invoice_number: reservation.invoice_number,
       checkout_completed_at: reservation.checkout_completed_at,
+      invoice_breakdown: reservation.invoice_breakdown,
     });
   } catch (err) {
     console.error('checkoutReservation', err);

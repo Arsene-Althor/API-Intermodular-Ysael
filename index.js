@@ -7,6 +7,7 @@ const reservationRoutes = require('./routes/reservationRoutes');
 const userRoutes = require('./routes/userRoutes');
 const roomRoutes = require('./routes/roomRoutes');
 const reviewRoutes = require('./routes/reviewRoutes');
+const invoiceRoutes = require('./routes/invoiceRoutes');
 const dbConnection = require('./db');
 const path = require('path');
 
@@ -24,6 +25,7 @@ app.use('/reservation',reservationRoutes)
 app.use('/user',userRoutes);
 app.use('/room', roomRoutes); // RUTAS DEFINIDAS Y FUNCIONALES, FALTAN DEFINIR BIEN ROLES
 app.use('/review', reviewRoutes);
+app.use('/invoices', invoiceRoutes);
 
 //Multer para subida de imagenes
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));

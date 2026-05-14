@@ -45,7 +45,7 @@ const reservationSchema = new mongoose.Schema({
         default: null,
         trim: true
     },
-    /** Nº factura fiscal (ej. FAC-2026-00001). Se asigna al completar checkout. */
+    /** Nº factura fiscal (formato configurable, ej. FAC-2026-0001). Se asigna al completar checkout. */
     invoice_number: {
         type: String,
         default: null,
@@ -56,6 +56,11 @@ const reservationSchema = new mongoose.Schema({
     /** Marca de tiempo del checkout (emisión de factura). */
     checkout_completed_at: {
         type: Date,
+        default: null,
+    },
+    /** Desglose congelado en checkout (noches, extras, descuentos). Ver invoiceBreakdownService. */
+    invoice_breakdown: {
+        type: mongoose.Schema.Types.Mixed,
         default: null,
     },
     createdBy:{

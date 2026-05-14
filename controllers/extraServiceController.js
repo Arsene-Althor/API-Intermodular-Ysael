@@ -22,7 +22,14 @@ async function createExtraService(req, res) {
       if (m) n = parseInt(m[1], 10) + 1;
     }
     const service_id = `EXT-${String(n).padStart(3, '0')}`;
-    const doc = await ExtraService.create({ service_id, name, active: true });
+    let price = 0;
+    if (req.body?.price !== undefined && req.body?.price !== null && req.body?.price !== '') {
+      price = Number(req.body.price);
+      if (Number.isNaN(price) || price < 0) {
+        return res.status(400).json({ error: 'price debe ser un número >= 0' });
+      }
+    }
+    const doc = await ExtraService.create({ service_id, name, active: true, price });
     return res.status(201).json(doc);
   } catch (err) {
     console.error('createExtraService', err);

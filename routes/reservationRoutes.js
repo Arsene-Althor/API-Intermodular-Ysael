@@ -36,6 +36,7 @@ router.post(
   reservationController.checkoutReservation,
 );
 
+router.get('/:reservation_id/billing-info', invoiceController.getBillingInfo);
 router.get('/:reservation_id/invoice', invoiceController.getInvoicePdf);
 
 // Auditoría: /reservation/RSV-xxxxx/audit

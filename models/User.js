@@ -148,6 +148,20 @@ const userSchema = new mongoose.Schema({
     maximum: [0.5, "El descuento máximo permitido es del 50% (0.5)"],
     default: 0.0,
   },
+  /** Datos opcionales de facturación B2B (PDF / pasarela ficticia). */
+  billing_company_name: {
+    type: String,
+    default: null,
+    trim: true,
+    maxlength: [200, 'Razón social demasiado larga'],
+  },
+  billing_company_cif: {
+    type: String,
+    default: null,
+    trim: true,
+    uppercase: true,
+    maxlength: [32, 'CIF empresa demasiado largo'],
+  },
   isActive: {
     type: Boolean,
     default: true,

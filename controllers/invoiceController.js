@@ -1,12 +1,45 @@
 const Reservation = require('../models/Reservation');
 const User = require('../models/User');
 const Room = require('../models/Room');
+const ExtraService = require('../models/ExtraService');
 const { streamInvoicePdf } = require('../services/invoicePdfService');
 
 function puedeVerReserva(req, reservaDoc) {
   if (!reservaDoc) return false;
   if (req.user.role === 'admin' || req.user.role === 'employee') return true;
   return reservaDoc.user_id === req.user.user_id;
+}
+
+/**
+ * GET /reservation/:reservation_id/billing-info
+ * Pasarela ficticia: sin cobro real; indica si hay factura y ruta de descarga.
+ */
+async function getBillingInfo(req, res) {
+  try {
+    const { reservation_id } = req.params;
+    const reservation = await Reservation.findOne({ reservation_id }).lean();
+    if (!reservation) return res.status(404).json({ error: 'Reserva no encontrada' });
+    if (!puedeVerReserva(req, reservation)) {
+      return res.status(403).json({ error: 'No autorizado' });
+    }
+
+    return res.json({
+      fictitious_payment_gateway: true,
+      message:
+        'Pasarela de pago simulada: no se procesan tarjetas ni transferencias. Única acción real disponible: descarga del PDF de factura tras checkout.',
+      reservation_id,
+      invoice_available: Boolean(reservation.invoice_number),
+      invoice_number: reservation.invoice_number || null,
+      checkout_completed_at: reservation.checkout_completed_at || null,
+      total_ttc: reservation.price,
+      download_invoice: reservation.invoice_number
+        ? { method: 'GET', path: `/reservation/${reservation_id}/invoice` }
+        : null,
+    });
+  } catch (err) {
+    console.error('getBillingInfo', err);
+    return res.status(500).json({ error: 'Error al obtener datos de facturación', detalle: err.message });
+  }
 }
 
 /**
@@ -29,12 +62,18 @@ async function getInvoicePdf(req, res) {
     }
 
     const clientUser = await User.findOne({ user_id: reservation.user_id })
-      .select('name surname email user_id')
+      .select('name surname email user_id dni billing_company_name billing_company_cif')
       .lean();
-    const room = await Room.findOne({ room_id: reservation.room_id }).select('type description room_id').lean();
+
+    const room = await Room.findOne({ room_id: reservation.room_id })
+      .select('type description room_id price_per_night offer_active offer_percent extra_services')
+      .lean();
+
+    const ids = Array.isArray(room?.extra_services) ? room.extra_services.map(String).filter(Boolean) : [];
+    const extraDocs = ids.length ? await ExtraService.find({ service_id: { $in: ids } }).lean() : [];
 
     const filename = `Factura-${reservation.invoice_number}.pdf`;
-    streamInvoicePdf(res, filename, reservation, clientUser, room);
+    streamInvoicePdf(res, filename, reservation, clientUser, room, extraDocs);
   } catch (err) {
     if (err.code === 'NO_INVOICE') {
       return res.status(400).json({ error: 'Sin número de factura' });
@@ -49,6 +88,44 @@ async function getInvoicePdf(req, res) {
 }
 
 /**
+ * GET /invoices?userId=… (o ?user_id=…)
+ * Reservas con factura emitida (`invoice_number`) para ese usuario.
+ * Cliente: solo su propio `userId`. Admin/empleado: cualquier usuario.
+ */
+async function listInvoicesByUser(req, res) {
+  try {
+    const raw = req.query.userId ?? req.query.user_id;
+    if (raw === undefined || raw === null || String(raw).trim() === '') {
+      return res.status(400).json({ error: 'Falta userId en query (ej. ?userId=CLI-00001)' });
+    }
+    const userId = String(raw).trim();
+
+    if (req.user.role === 'client' && userId !== req.user.user_id) {
+      return res.status(403).json({ error: 'No autorizado' });
+    }
+
+    const list = await Reservation.find({
+      user_id: userId,
+      invoice_number: { $ne: null, $exists: true, $nin: ['', null] },
+    })
+      .sort({ checkout_completed_at: -1 })
+      .select(
+        'reservation_id invoice_number user_id room_id price checkout_completed_at check_in check_out cancelation_date invoice_breakdown',
+      )
+      .lean();
+
+    return res.json({
+      user_id: userId,
+      count: list.length,
+      reservations: list,
+    });
+  } catch (err) {
+    console.error('listInvoicesByUser', err);
+    return res.status(500).json({ error: 'Error al listar facturas por usuario', detalle: err.message });
+  }
+}
+
+/**
  * GET /reservation/invoices/history
  * Listado de reservas con factura (solo admin / employee).
  */
@@ -59,7 +136,7 @@ async function listInvoiceHistory(req, res) {
     })
       .sort({ checkout_completed_at: -1 })
       .select(
-        'reservation_id invoice_number user_id room_id price checkout_completed_at check_in check_out cancelation_date',
+        'reservation_id invoice_number user_id room_id price checkout_completed_at check_in check_out cancelation_date invoice_breakdown',
       )
       .lean();
     return res.json(list);
@@ -70,6 +147,8 @@ async function listInvoiceHistory(req, res) {
 }
 
 module.exports = {
+  getBillingInfo,
   getInvoicePdf,
+  listInvoicesByUser,
   listInvoiceHistory,
 };
