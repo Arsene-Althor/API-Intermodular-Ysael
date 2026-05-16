@@ -1,4 +1,5 @@
 const Reservation = require('../models/Reservation');
+const HotelInvoice = require('../models/HotelInvoice');
 
 function escapeRegex(s) {
   return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -75,14 +76,19 @@ async function nextInvoiceNumber(referenceDate = new Date()) {
     throw new Error('INVOICE_NUMBER_TEMPLATE debe incluir exactamente un {SEQ}');
   }
 
-  const candidates = await Reservation.find({
+  const fromReservations = await Reservation.find({
+    invoice_number: { $type: 'string', $regex: re },
+  })
+    .select('invoice_number')
+    .lean();
+  const fromInvoices = await HotelInvoice.find({
     invoice_number: { $type: 'string', $regex: re },
   })
     .select('invoice_number')
     .lean();
 
   let maxSeq = 0;
-  for (const row of candidates) {
+  for (const row of [...fromReservations, ...fromInvoices]) {
     const m = re.exec(row.invoice_number);
     if (m) {
       const n = parseInt(m[1], 10);

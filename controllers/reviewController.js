@@ -58,15 +58,17 @@ async function createReview(req, res) {
       return res.status(400).json({ error: "La puntuación debe ser entre 1 y 5" });
     }
 
-    const hasBooking = await Reservation.findOne({
+    const hasEligibleBooking = await Reservation.findOne({
       user_id,
       room_id,
+      cancelation_date: null,
+      check_out: { $lt: new Date() },
     });
 
-    if (!hasBooking) {
+    if (!hasEligibleBooking) {
       return res.status(403).json({
         error:
-          "Solo pueden reseñar usuarios que hayan reservado esa habitación",
+          'Solo puedes reseñar tras una estancia completada en esa habitación (reserva no cancelada y fecha de salida ya pasada).',
       });
     }
 

@@ -7,7 +7,7 @@ async function capturePreviousReservationState(req, res, next) {
   try {
     const reservation_id =
       (req.body && req.body.reservation_id) ||
-      (req.params && req.params.reservation_id);
+      (req.params && (req.params.reservation_id || req.params.id));
     if (!reservation_id) {
       req.bookingAuditPreviousState = undefined;
       return next();

@@ -1,6 +1,6 @@
 # API Proyecto Intermodular — Sistema de Gestión Hotelera
 
-API REST desarrollada con **Node.js**, **Express** y **MongoDB (Mongoose)** para la gestión integral de un hotel: reservas (incluida **facturación en PDF tras checkout**), usuarios, habitaciones (con **galería**, **ofertas** y **servicios extra**), reseñas y catálogo `ExtraService`. Incorpora un **sistema de auditoría** que registra de forma automática cada operación relevante sobre las reservas.
+API REST desarrollada con **Node.js**, **Express** y **MongoDB (Mongoose)** para la gestión integral de un hotel: reservas (justificante y **factura PDF** con tabla de conceptos, colección **`HotelInvoice`** con tipos `reservation` / `early_checkin` / `late_checkout` / `stay_extension`), **check-in en recepción**, **P9** estadísticas/fidelidad e **historial de estancias**, **P19** entrada anticipada / salida tardía (mismo día, €/h, modo instalaciones, ventana **12 h** para el cliente, auto-aprobación por rango), **ampliación de estancia** (`extend-stay`), usuarios, habitaciones (galería, ofertas, servicios extra), reseñas y catálogo `ExtraService`. **Auditoría** de reservas en `booking_audit_log` (activable/desactivable vía `operationalsettings`).
 
 > Esta API es consumida por dos clientes: una aplicación de escritorio (WPF/.NET) y una aplicación móvil (Android/Kotlin). Cada uno cuenta con su propia documentación en su respectivo repositorio.
 
@@ -11,10 +11,16 @@ API REST desarrollada con **Node.js**, **Express** y **MongoDB (Mongoose)** para
 - [Puesta en marcha](#puesta-en-marcha)
 - [Tecnologías utilizadas](#tecnologías-utilizadas)
 - [Estructura del proyecto](#estructura-del-proyecto)
+- [Base de datos MongoDB (colecciones y relaciones)](#base-de-datos-mongodb-colecciones-y-relaciones)
 - [Sistema de Auditoría de Reservas](#sistema-de-auditoría-de-reservas)
 - [Gestión de habitaciones](#gestión-de-habitaciones)
 - [Módulo de Reseñas](#módulo-de-reseñas)
-- [Facturación PDF (factura descargable)](#facturación-pdf-factura-descargable)
+- [Facturación PDF (justificante y factura fiscal)](#facturación-pdf-justificante-y-factura-fiscal)
+- [P9 · Estadísticas y fidelidad del cliente](#p9--estadísticas-y-fidelidad-del-cliente)
+- [P9 · Historial de estancias por usuario](#p9--historial-de-estancias-por-usuario)
+- [P19 · Flexibilidad (entrada anticipada / salida tardía)](#p19--flexibilidad-entrada-anticipada--salida-tardía)
+- [Ampliación de estancia (extend-stay)](#ampliación-de-estancia-extend-stay)
+- [Colección HotelInvoice (facturación multi-concepto)](#colección-hotelinvoice-facturación-multi-concepto)
 - [Endpoints y verbos HTTP](#endpoints-y-verbos-http)
 - [Ejemplos de peticiones](#ejemplos-de-peticiones)
 - [Evolución del proyecto](#evolución-del-proyecto-desde-la-creación)
@@ -43,6 +49,27 @@ Crear un archivo `.env` en la raíz del proyecto:
 | `INVOICE_NUMBER_SEQ_DIGITS` | (Opcional) Ancho del secuencial con ceros a la izquierda | `4` (→ `0001`) |
 | `INVOICE_NUMBER_INCLUDE_YEAR` | (Opcional) Si `0` o `false`, formato `PREFIX-SEQ` sin año | `true` |
 | `INVOICE_NUMBER_TEMPLATE` | (Opcional) Plantilla con `{PREFIX}`, `{YEAR}`, `{SEQ}` (anula el modo prefijo+sep+año) | `FAC-{YEAR}-{SEQ}` |
+| `CHECK_IN_WINDOW_END_HOUR` | (Opcional) Hora fin ventana check-in recepción el día de entrada (tras las 12:00) | `22` |
+| `CHECK_IN_LATE_FEE_EUR` | (Opcional) Recargo TTC al registrar check-in **tardío** (se suma a `price`) | `25` |
+| `FLEX_EARLY_CHECKIN_BASE_FEE` | *(obsoleto)* Usar `FLEX_EARLY_RATE_PER_HOUR` | — |
+| `FLEX_LATE_CHECKOUT_BASE_FEE` | *(obsoleto)* Usar `FLEX_LATE_RATE_PER_HOUR` | — |
+| `FLEX_DISCOUNT_SILVER_PERCENT` | (P19) Descuento plata sobre tarifa flexibilidad | `15` |
+| `FLEX_DISCOUNT_GOLD_PERCENT` | (P19) Descuento oro | `35` |
+| `FLEX_EARLY_MIN_HOUR` | (P19) Hora mínima solicitud entrada anticipada (mismo día) | `8` |
+| `FLEX_LATE_MAX_HOUR` | (P19) Hora máxima salida tardía (mismo día) | `18` |
+| `FLEX_AUTO_APPROVE_SILVER` | (P19) Si `1`/`true`, plata + disponibilidad → `approved` automático | `true` |
+| `FLEX_AUTO_APPROVE_GOLD` | (P19) Igual para oro | `true` |
+| `FLEX_EARLY_RATE_PER_HOUR` | (P19) €/h de diferencia vs 12:00 (entrada anticipada) | `13.33` |
+| `FLEX_LATE_RATE_PER_HOUR` | (P19) €/h de diferencia vs 11:00 (salida tardía) | `11.67` |
+| `FLEX_MIN_BILLABLE_HOURS` | (P19) Mínimo de horas facturables en el suplemento | `1` |
+| `FLEX_MAX_SUPPLEMENT_EUR` | (P19) Tope del suplemento antes de dto. fidelidad (`0` = sin tope) | `0` |
+| `FLEX_NOTIFY_CLIENT` | (P19) Email al aprobar/rechazar (`0` desactiva) | activo |
+| `LOYALTY_SILVER_NIGHTS` | (P9) Noches para rango plata | `5` |
+| `LOYALTY_GOLD_NIGHTS` | (P9) Noches para rango oro | `15` |
+| `LOYALTY_SILVER_SPENT_EUR` | (P9) Gasto acumulado (€) para plata | `400` |
+| `LOYALTY_GOLD_SPENT_EUR` | (P9) Gasto acumulado (€) para oro | `1200` |
+| `BOOKING_AUDIT_ENABLED` | (Opcional) `0`/`false` desactiva escritura en `booking_audit_log` por defecto en BD | `true` |
+| `CLIENT_FLEX_REQUEST_WINDOW_HOURS` | (Opcional) Horas desde las 11:00 del día de salida para que el **cliente** solicite late/ampl. corta | `12` |
 
 ```bash
 npm start
@@ -79,17 +106,27 @@ API-Intermodular-Ysael/
 │
 ├── models/
 │   ├── BookingAuditLog.js          # Registro de auditoría
-│   ├── Reservation.js              # Reservas
+│   ├── Reservation.js              # Reservas (+ recepción, P19, superseded_by…)
+│   ├── HotelInvoice.js             # Facturas emitidas (varios tipos por reserva)
+│   ├── ClientLoyaltyStats.js       # P9 · un doc por user_id (noches, gasto, rango)
 │   ├── Room.js                     # Habitaciones
 │   ├── ExtraService.js             # Catálogo de servicios extra (EXT-xxx)
 │   ├── User.js                     # Usuarios
 │   ├── Review.js                   # Reseñas
-│   └── InvoiceSettings.js         # Datos fiscales emisor (documento único; override .env)
+│   ├── InvoiceSettings.js         # Datos fiscales emisor (documento único; override .env)
+│   ├── FlexibilitySettings.js     # P19 · €/h suplemento + notificaciones
+│   └── OperationalSettings.js    # Auditoría on/off + ventana 12 h cliente (flex)
 │
 ├── controllers/
 │   ├── auditController.js          # Consulta de auditoría (solo lectura)
-│   ├── reservationController.js    # CRUD de reservas + escritura de auditoría + checkout
-│   ├── invoiceController.js        # PDF factura + listados (`/invoices`, histórico)
+│   ├── reservationController.js    # CRUD reservas + checkout + check-in recepción
+│   ├── flexibilityController.js    # P19 · solicitudes early/late + aprobación
+│   ├── stayExtensionController.js  # PATCH extend-stay
+│   ├── userStayController.js       # P9 · GET /users/:id/history|stats
+│   ├── loyaltyStatsController.js   # P9 · GET /loyalty/me
+│   ├── flexibilitySettingsController.js # P19 · GET/PUT /settings/flexibility
+│   ├── operationalSettingsController.js # GET/PUT /settings/operational
+│   ├── invoiceController.js        # PDF, confirm-payment, listados HotelInvoice
 │   ├── invoiceSettingsController.js # GET/PUT `/settings/invoice`
 │   ├── authController.js           # Autenticación (login / registro)
 │   ├── userController.js           # Gestión de usuarios
@@ -106,13 +143,25 @@ API-Intermodular-Ysael/
 │   ├── auditService.js             # Lógica de escritura y resumen de auditoría
 │   ├── invoiceNumberService.js     # Numeración automática invoice_number (.env)
 │   ├── invoiceBreakdownService.js  # Desglose noches / oferta habitación / dto cliente / extras
-│   ├── invoicePdfService.js        # Modelo factura + generación PDF (pdfkit)
-│   └── invoiceSettingsService.js   # Merge BD + `.env` para cabecera fiscal PDF
+│   ├── invoicePdfService.js        # Factura fiscal + justificante PDF (pdfkit)
+│   ├── invoiceEmissionService.js   # Emisión + persistencia HotelInvoice (idempotente)
+│   ├── invoiceSettingsService.js   # Merge BD + `.env` para cabecera fiscal PDF
+│   ├── flexibilityInvoiceHelper.js # Factura suplemento P19 al aprobar
+│   ├── receptionCheckInService.js  # Ventana horaria check-in recepción + recargo tardío
+│   ├── clientLoyaltyStatsService.js # P9 · agrega reservas → upsert ClientLoyaltyStats
+│   ├── userStayService.js          # P9 · historial paginado + estadísticas enriquecidas
+│   ├── stayExtensionService.js     # Ampliación salida + cambio habitación
+│   ├── flexibilityProgramService.js # P19 · tarifas, disponibilidad efectiva, validación horas
+│   ├── flexibilitySettingsService.js
+│   └── flexibilityNotificationService.js # P19 · email al resolver solicitud
 │
 ├── routes/
-│   ├── reservationRoutes.js        # Rutas de reservas (incluye auditoría)
+│   ├── reservationRoutes.js        # Reservas, facturas PDF, check-in, flexibilidad P19
+│   ├── bookingRoutes.js            # P19 + extend-stay + review bajo /bookings
+│   ├── usersRoutes.js              # P9 · /users/:id/history y /stats
 │   ├── invoiceRoutes.js            # GET /invoices?userId= (facturas por cliente)
-│   ├── settingsRoutes.js           # GET/PUT `/settings/invoice`
+│   ├── settingsRoutes.js           # GET/PUT `/settings/invoice`, `/settings/flexibility`
+│   ├── loyaltyRoutes.js            # P9 · GET `/loyalty/me`, POST `/loyalty/me/sync`
 │   ├── authRoutes.js
 │   ├── userRoutes.js
 │   ├── roomRoutes.js
@@ -126,11 +175,93 @@ API-Intermodular-Ysael/
 
 ---
 
+## Base de datos MongoDB (colecciones y relaciones)
+
+La API es el **único componente** que lee y escribe en MongoDB. Los clientes WPF y Android solo consumen la REST API. En Compass verás la base (p. ej. `Proyecto-Intermodular`) con las colecciones siguientes.
+
+### Diagrama de relaciones (lógicas)
+
+MongoDB **no usa claves foráneas** de SQL: las relaciones son por **IDs de negocio** (`user_id`, `room_id`, `reservation_id`, …). La integridad la garantiza la aplicación al validar que existan los documentos referenciados.
+
+```mermaid
+erDiagram
+    users ||--o{ reservations : "user_id"
+    rooms ||--o{ reservations : "room_id"
+    users ||--o| clientloyaltystats : "user_id (1 doc)"
+    users ||--o{ reviews : "user_id"
+    rooms ||--o{ reviews : "room_id"
+    reservations ||--o{ booking_audit_log : "booking_id"
+    reservations ||--o{ hotelinvoices : "reservation_id"
+    reservations ||--o{ reviews : "reservation_id"
+    rooms }o--o{ extraservices : "extra_services[]"
+    invoicesettings ||..|| hotelinvoices : "datos PDF emisor"
+    flexibilitysettings ||..|| reservations : "tarifas P19"
+    operationalsettings ||..|| booking_audit_log : "activar/desactivar log"
+```
+
+### Tabla de colecciones
+
+| Colección en Compass | Modelo Mongoose | Qué guarda | Relación principal |
+|----------------------|-----------------|------------|-------------------|
+| **users** | `User` | Clientes, empleados y admin (login, perfil, descuento, imagen) | `user_id` → `CLI-xxxxx` / `EMP-xxxxx` |
+| **rooms** | `Room` | Catálogo de habitaciones (precio, galería, oferta, servicios) | `room_id` → `HAB-xxx` |
+| **reservations** | `Reservation` | Estancia: fechas, precio, check-in recepción, P19 embebido, factura, ampliaciones | `user_id` + `room_id`; puede enlazar `superseded_by_reservation_id` |
+| **extraservices** | `ExtraService` | Catálogo global (TV, cuna, …) con precio | Referenciado desde `rooms.extra_services[]` |
+| **reviews** | `Review` | Valoración tras estancia | `user_id` + `room_id` (+ contexto de reserva) |
+| **clientloyaltystats** | `ClientLoyaltyStats` | **Un documento por cliente**: noches, gasto, rango (bronce/plata/oro) | `user_id` (sincronizado desde reservas) |
+| **hotelinvoices** | `HotelInvoice` | Cada factura emitida (checkout, P19, ampliación) | `reservation_id`, `user_id`, `room_id`; `type`: reservation / early_checkin / late_checkout / stay_extension |
+| **booking_audit_log** | `BookingAuditLog` | Historial de cambios en reservas (snapshots antes/después) | `booking_id` = `reservation_id` |
+| **invoicesettings** | `InvoiceSettings` | Datos fiscales del hotel para el PDF (nombre, NIF, IVA) | Documento único; complementa `.env` |
+| **flexibilitysettings** | `FlexibilitySettings` | Tarifas €/h P19, topes horarios, auto-aprobación por rango | Documento único de configuración |
+| **operationalsettings** | `OperationalSettings` | Interruptor de auditoría + ventana horas cliente (12 h por defecto) | Documento único; se crea al guardar desde WPF |
+
+### Colección central: `reservations`
+
+Cada reserva enlaza **huésped** y **habitación** y concentra la lógica de negocio:
+
+| Campo / bloque | Relación o significado |
+|----------------|------------------------|
+| `user_id` | Huésped en `users` |
+| `room_id` | Habitación en `rooms` |
+| `early_checkin_requested` / `late_checkout_requested` | Subdocumentos P19 (estado, hora, tarifa, `late_mode`: habitación o `facilities`) |
+| `reception_check_in_*` | Check-in físico en recepción (WPF) |
+| `invoice_number`, `invoice_breakdown` | Copia en reserva tras checkout; detalle también en `hotelinvoices` |
+| `superseded_by_reservation_id` / `extended_from_reservation_id` | Cadena si la ampliación obliga a otra habitación |
+
+### Facturación: dos sitios complementarios
+
+1. **`reservations`**: último estado de la estancia (`price`, `invoice_number`, desglose congelado).
+2. **`hotelinvoices`**: **histórico** de cada emisión (varias facturas por reserva si hay P19 o ampliación).
+
+El PDF se genera con datos de `invoicesettings` + `.env` y el desglose de la reserva o de la fila `HotelInvoice`.
+
+### Configuración (documentos únicos)
+
+| Colección | Uso |
+|-----------|-----|
+| `invoicesettings` | Emisor en factura PDF (WPF → **Datos factura**) |
+| `flexibilitysettings` | Reglas P19 (WPF → **Reglas solicitudes**; `.env` como respaldo) |
+| `operationalsettings` | `booking_audit_enabled` (WPF → checkbox en **Auditorías**); `client_flex_request_window_hours` (12 h tras 11:00 para late/ampl. corta en app) |
+
+### Auditoría: lectura siempre, escritura opcional
+
+- **Lectura:** `GET /reservation/:id/audit` y `GET /reservation/audits` consultan `booking_audit_log`.
+- **Escritura:** solo si `booking_audit_enabled` es `true` (Mongo o `.env`). Si está desactivado, las reservas siguen funcionando pero **no se insertan** nuevas líneas (ahorra recursos).
+
+### Endpoints de configuración operativa
+
+| Método | Ruta | Rol |
+|--------|------|-----|
+| `GET` | `/settings/operational` | admin / empleado |
+| `PUT` | `/settings/operational` | admin / empleado — body: `{ "booking_audit_enabled": true/false, "client_flex_request_window_hours": 12 }` |
+
+---
+
 ## Sistema de Auditoría de Reservas
 
 ### Descripción general
 
-El sistema de auditoría registra de forma automática un historial de cada operación realizada sobre las reservas. Para cada evento se almacena:
+El sistema de auditoría registra de forma automática un historial de cada operación realizada sobre las reservas (cuando está **activado** en `operationalsettings` o `BOOKING_AUDIT_ENABLED` en `.env`). Para cada evento se almacena:
 
 - **Quién** realizó la acción (identificador y tipo de actor).
 - **Qué** operación se ejecutó (`CREATED`, `UPDATED`, `CANCELED`).
@@ -168,6 +299,7 @@ Solo se auditan **cambios que llegan a guardarse** en MongoDB. El middleware cor
 | `DELETE /reservation/cancel/:reservation_id` | igual | igual | `CANCELED` | ID en URL. |
 | `PATCH /reservation/update` | igual | `updateReservation` | `UPDATED` | Cambios de habitación, fechas, cliente, precio. |
 | `POST /reservation/checkout` | igual | `checkoutReservation` | `UPDATED` | **No** hay valor `CHECKOUT` aparte: fiscalmente es una modificación (factura + fecha checkout). En el historial se verán esos campos en `detalle_cambios`. |
+| `POST /reservation/check-in` | igual | `registerReceptionCheckIn` | `UPDATED` | Registra `reception_check_in_at`; si tardío, recargo en `price`. |
 
 **No** pasan por este flujo: listados (`GET /all`, `/mine`, …), cálculo de precios, descarga de factura PDF, ni `GET …/audit` (solo lectura del log).
 
@@ -370,15 +502,40 @@ Las habitaciones guardan en `extra_services` los IDs que elijan desde ese catál
 
 ---
 
-## Facturación PDF (factura descargable)
+## Facturación PDF (justificante y factura fiscal)
 
-Esta parte del sistema responde a dos necesidades: que el **cliente** pueda **descargar la factura en PDF** cuando la estancia ya está cerrada fiscalmente, y que el **personal del hotel** pueda **registrar el checkout** y **consultar el histórico** de facturas emitidas.
+Las facturas fiscales emitidas se guardan en la colección **`HotelInvoice`** (varios documentos por reserva posibles: estancia, P19, ampliación). El campo `Reservation.invoice_number` sigue reflejando la última factura principal de checkout cuando aplica.
 
-### Idea en una frase
+El huésped dispone de **dos tipos de PDF** en el ciclo de vida de la reserva:
+
+| Documento | Cuándo existe | Endpoint | Naturaleza |
+|-----------|---------------|----------|------------|
+| **Justificante de reserva** | Tras crear/pagar la reserva (pasarela **simulada** en apps) | `GET /reservation/:id/booking-receipt` | PDF **no fiscal**: acuse de reserva y importe TTC simulado; útil en recepción antes del checkout |
+| **Factura fiscal** | Tras **checkout** en recepción (`invoice_number` asignado) | `GET /reservation/:id/invoice` | PDF con numeración, IVA desglosado y desglose económico (`invoice_breakdown`) |
+
+Ambos se **generan al vuelo** con **pdfkit** (no se guardan en disco en el servidor).
+
+**Formato actual de la factura fiscal** (plantilla en `invoicePdfService.js`):
+
+- Título **Factura** + número (`FAC-…`) y **fecha**.
+- Bloques **Emisor** y **Cliente** en dos columnas (nombre, NIF, dirección / email, DNI, ciudad).
+- Tabla **Conceptos facturados**: Concepto · Cant. · P. unit. · Total (alojamiento con fechas y nota de descuento, líneas de extras, ajuste si aplica).
+- Totales alineados a la derecha: **Base imponible**, **IVA (%)**, **Total factura**.
+
+### Idea en una frase (factura fiscal)
 
 1. Un empleado o administrador marca la reserva como **checkout completado**.  
 2. El servidor **guarda** `invoice_number`, `checkout_completed_at` y un **`invoice_breakdown`** (desglose congelado: noches, alojamiento, descuento perfil cliente, extras con precio, ajuste al importe pactado `price`).  
-3. Cualquier petición válida a **descargar factura** genera el **PDF al momento** (no se guarda el archivo en disco; se envía por HTTP). Las reservas antiguas sin `invoice_breakdown` recalculan el desglose al generar el PDF (misma fórmula que en checkout).
+3. Cualquier petición válida a **descargar factura** genera el **PDF al momento**. Las reservas antiguas sin `invoice_breakdown` recalculan el desglose al generar el PDF (misma fórmula que en checkout).
+
+### Justificante de reserva (`booking-receipt`)
+
+- Disponible **en cuanto existe la reserva** (no exige `invoice_number` ni checkout).
+- Misma regla de autorización que la factura: **cliente** dueño de la reserva o **admin/empleado**.
+- Contenido: cabecera «JUSTIFICANTE DE RESERVA», datos hotel/cliente, habitación, fechas, **importe total TTC** de `reservation.price`, aviso de pasarela ficticia y texto de que la **factura fiscal** se emitirá en checkout.
+- Nombre de archivo sugerido: `Justificante-RSV-xxxxx.pdf`.
+- Implementación: `writeBookingReceiptPdf` + `streamBookingReceiptPdf` en `services/invoicePdfService.js`; controlador `getBookingReceiptPdf` en `invoiceController.js`.
+- `GET …/billing-info` incluye `download_booking_receipt` con método y ruta relativos para que los clientes descubran el endpoint sin hardcodear.
 
 ### Datos nuevos en MongoDB (`Reservation`)
 
@@ -387,10 +544,14 @@ Esta parte del sistema responde a dos necesidades: que el **cliente** pueda **de
 | `invoice_number` | Identificador fiscal **único** (generado en checkout; formato vía `.env`, por defecto `FAC-AAAA-NNNN`) | Tras **checkout** |
 | `checkout_completed_at` | Fecha y hora en que se registró el checkout | Igual que arriba |
 | `invoice_breakdown` | Objeto JSON: noches, tarifas, oferta habitación, descuento cliente, líneas de extras, subtotales, `adjustment_amount` si el total pactado no coincide con el desglose automático | Tras checkout (y opcionalmente en histórico) |
+| `reception_check_in_at` | Hora real de check-in en mostrador | Tras `POST /reservation/check-in` |
+| `reception_check_in_late` / `reception_check_in_late_fee` | Si hubo recargo por llegar fuera de ventana 12:00–22:00 | Check-in recepción |
+| `early_checkin_requested` | Objeto P19: solicitud entrar antes de las 12:00 (`pending` / `approved` / `rejected`) | Cliente solicita; personal aprueba |
+| `late_checkout_requested` | Objeto P19: solicitud salir después de las 11:00 | Igual |
 
 **Usuario (`User`) — facturación opcional:** `billing_company_name` y `billing_company_cif` (además de DNI ya existente) salen en el bloque “Datos del cliente” del PDF si están rellenados (p. ej. vía `modifyUser`).
 
-Mientras la reserva **no** haya pasado por checkout, `invoice_number` sigue en `null` y **no** se puede descargar factura (la API responde con error claro).
+Mientras la reserva **no** haya pasado por checkout, `invoice_number` sigue en `null` y **no** se puede descargar la **factura fiscal** (la API responde con error claro). El **justificante** sí está disponible en ese estado.
 
 ### Numeración automática (`invoice_number`)
 
@@ -425,28 +586,32 @@ Mientras la reserva **no** haya pasado por checkout, `invoice_number` sigue en `
 | **Histórico global** (`GET /reservation/invoices/history`) | Solo **admin** y **employee** | Todas las reservas con factura (gestión interna) |
 | **Facturas por usuario** (`GET /invoices?userId=…`) | **Cliente** (solo su `userId`) o **admin/empleado** (cualquier `userId`) | Lista reservas con `invoice_number` en colección **Reservation** |
 | **Reenviar factura por email** (`POST /reservation/.../invoice/email`) | Solo **admin** y **employee** | Genera el PDF en servidor y lo adjunta (Nodemailer); destino = email del cliente o `to` en body |
-| **Info facturación / pasarela ficticia** (`GET /reservation/.../billing-info`) | Dueño o personal | JSON: sin cobro real, si hay factura y ruta relativa de descarga |
+| **Info facturación / pasarela ficticia** (`GET /reservation/.../billing-info`) | Dueño o personal | JSON: sin cobro real, rutas de **justificante** y (si aplica) **factura** |
+| **Descargar justificante** (`GET /reservation/.../booking-receipt`) | Dueño o personal | PDF no fiscal; **sin** checkout previo |
 
 La regla de “¿puede ver esta reserva?” reutiliza la misma lógica que el resto de reservas: el cliente coincide con `user_id` de la reserva; el personal ve todas.
 
-**Pasarela de pago:** no hay integración con banco ni TPV. El endpoint `billing-info` documenta el flujo simulado; la única operación “real” del bloque P5 es la **descarga del PDF** tras checkout.
+**Pasarela de pago:** no hay integración con banco ni TPV. El endpoint `billing-info` documenta el flujo simulado; las descargas “reales” del bloque P5 son el **justificante** (siempre que exista la reserva) y la **factura fiscal** (solo tras checkout).
 
 ### Endpoints (resumen práctico)
 
 | Petición | Para qué sirve |
 |----------|----------------|
 | `POST /reservation/checkout` | Cerrar la estancia, **emitir** número de factura y guardar **`invoice_breakdown`** |
-| `GET /reservation/:reservation_id/billing-info` | Estado de factura y mensaje de pasarela **ficticia** (sin cobro) |
-| `GET /reservation/:reservation_id/invoice` | **Descargar** el PDF (nombre de archivo tipo `Factura-FAC-2026-0001.pdf`) |
+| `GET /reservation/:reservation_id/billing-info` | Pasarela **ficticia** + `download_booking_receipt` / `download_invoice` |
+| `GET /reservation/:reservation_id/booking-receipt` | **Justificante** PDF no fiscal (`Justificante-RSV-xxxxx.pdf`) |
+| `GET /reservation/:reservation_id/invoice` | **Factura fiscal** PDF (`Factura-FAC-2026-0001.pdf`) |
 | `POST /reservation/:reservation_id/invoice/email` | **Reenviar** el PDF por correo al cliente (body opcional `{ "to": "..." }`; solo **admin/empleado**; requiere SMTP en `.env`) |
 | `GET /reservation/invoices/history` | **Listar** todas las reservas con factura (admin/empleado) |
 | `GET /invoices?userId=CLI-xxxxx` | **Listar** reservas con factura **de un usuario** (misma query con `user_id`) |
 
 Las rutas bajo **`/reservation`** y **`GET /invoices`** **exigen JWT** (`Authorization: Bearer ...`). No hay colección aparte de “facturas”: los datos salen de **`Reservation`** filtrando `user_id` y `invoice_number` no vacío.
 
-### Qué lleva el PDF (contenido)
+### Qué lleva cada PDF (contenido)
 
-El PDF cumple un **contenido mínimo** tipo factura simplificada:
+**Justificante (`booking-receipt`):** título «JUSTIFICANTE DE RESERVA», aviso no fiscal, hotel, cliente, nº reserva, habitación, fechas, importe TTC de la reserva, pie de pasarela simulada.
+
+**Factura fiscal (`invoice`):** contenido mínimo tipo factura simplificada:
 
 - **Hotel:** nombre, CIF/NIF, dirección (`.env` / valores por defecto).
 - **Cliente:** nombre completo, `user_id`, DNI/NIF, email; **empresa** si existen `billing_company_name` / `billing_company_cif` en el usuario.
@@ -492,10 +657,10 @@ Si no las defines, el PDF usa textos por defecto razonables para desarrollo:
 | `routes/settingsRoutes.js` | Prefijo `/settings` en `index.js` |
 | `controllers/reservationController.js` | **`checkoutReservation`**: desglose + **`nextInvoiceNumber`** (servicio dedicado) |
 | `services/invoiceNumberService.js` | Formato configurable y siguiente `invoice_number` |
-| `controllers/invoiceController.js` | **`getInvoicePdf`**, **`postInvoiceEmail`**, **`getBillingInfo`**, **`listInvoicesByUser`**, **`listInvoiceHistory`** |
+| `controllers/invoiceController.js` | **`getBookingReceiptPdf`**, **`getInvoicePdf`**, **`postInvoiceEmail`**, **`getBillingInfo`**, listados |
 | `services/invoiceBreakdownService.js` | Cálculo del desglose (checkout y PDF legacy) |
-| `services/invoicePdfService.js` | Modelo + **pdfkit** |
-| `routes/reservationRoutes.js` | `billing-info` antes de `invoice` (orden de rutas) |
+| `services/invoicePdfService.js` | Factura fiscal + **justificante** (`writeBookingReceiptPdf`, `streamBookingReceiptPdf`) |
+| `routes/reservationRoutes.js` | Orden: `billing-info` → `booking-receipt` → `invoice` (rutas estáticas antes de parámetros genéricos) |
 | `routes/invoiceRoutes.js` | **`GET /invoices`** montado en `index.js` como `/invoices` |
 
 ### Respuestas de error habituales (sin entrar en código)
@@ -507,13 +672,181 @@ Si no las defines, el PDF usa textos por defecto razonables para desarrollo:
 
 ### Integración en apps (Android / WPF)
 
-Hoy la lógica vive **solo en la API**. Los clientes móvil y escritorio pueden:
+Los clientes implementan:
 
-- Mostrar un botón “Descargar factura” si `invoice_number != null` en el JSON de la reserva.
-- Pantalla “Mis facturas”: `GET /invoices?userId=<user_id del JWT>` (el cliente solo puede el suyo).
-- Abrir el PDF con una petición GET autenticada o guardar el binario como archivo.
+- **Justificante**: `GET /reservation/{id}/booking-receipt` en **Mis reservas**, **Historial**, **Actividad**, **Gestionar reserva**, **Mis facturas** (bloque “sin factura fiscal”) y en WPF **modificar reserva**.
+- **Factura fiscal**: botón solo si `invoice_number != null`; listado en **Mis facturas** vía `GET /invoices?userId=…`.
+- **Checkout** (solo personal): `POST /reservation/checkout` desde WPF cuando la estancia ha pasado y aún no hay factura.
 
-Los detalles de UI quedan en el README de cada cliente cuando se implementen.
+Detalle de pantallas en los README de **APP-Intermodular-Ysael** y **WPF-Intermodular-Ysael**.
+
+---
+
+## P9 · Estadísticas y fidelidad del cliente
+
+Colección **`ClientLoyaltyStats`**: **un documento por `user_id`** (`CLI-xxxxx`), actualizado al agregar/cancelar reserva, al **checkout** y cada vez que el cliente llama a `GET /loyalty/me`.
+
+### Cálculo (desde `reservations`)
+
+| Métrica | Regla |
+|---------|--------|
+| `total_spent` | Suma de `price` de **todas** las reservas no canceladas (incluye activas con pago simulado en la app) |
+| `total_nights` | Noches contratadas en esas mismas reservas |
+| `completed_stays_count` | Solo estancias finalizadas (`checkout_completed_at` o `check_out` ≤ ahora) |
+| `loyalty_tier` | `bronze` / `silver` / `gold` según umbrales de noches **o** gasto (`.env` `LOYALTY_*`) |
+
+### Endpoints
+
+| Método | Ruta | Descripción | Auth |
+|--------|------|-------------|------|
+| `GET` | `/loyalty/me` | Recalcula, guarda en BD y devuelve estadísticas del usuario logueado | Cliente |
+| `POST` | `/loyalty/me/sync` | Fuerza recálculo (mismo resultado) | Cliente |
+| `GET` | `/loyalty/user/:userId` | Estadísticas de un cliente (`?resync=0` para leer caché) | Admin, empleado |
+
+**Respuesta JSON (ejemplo):** `loyalty_tier`, `total_nights`, `total_spent`, `completed_stays_count`, `summary` (`total_reservations`, `active_reservations`, …), `tier_thresholds`.
+
+**Cliente Android:** pestaña **Estadísticas** en la bottom bar → `GET /loyalty/me`. **WPF:** no hay pantalla de estadísticas del huésped (solo gestión P19 en recepción).
+
+Archivos: `services/clientLoyaltyStatsService.js`, `controllers/loyaltyStatsController.js`, `routes/loyaltyRoutes.js`.
+
+---
+
+## P19 · Flexibilidad (entrada anticipada / salida tardía)
+
+Programa de fidelización (vinculado a **P9**): rango **bronce / plata / oro** en `ClientLoyaltyStats`. El cliente solicita entrar antes (12:00) o salir después (11:00). La API **comprueba disponibilidad** en la franja y aplica **aprobación automática** según rango.
+
+> **Nota:** en MongoDB el documento sigue en la colección `reservations` con `reservation_id` tipo `RSV-xxxxx`. El prefijo REST **`/bookings/:id`** es alias semántico (`id` = `reservation_id`).
+
+### Lógica de negocio (orden)
+
+1. Validar hora solicitada (mismo día de entrada/salida, dentro de franja permitida; estándar **12:00** entrada / **11:00** salida).
+2. **Plazo cliente (app):** desde las **11:00** del día de salida, el huésped dispone de **`client_flex_request_window_hours`** (por defecto **12 h**) para solicitar **salida tardía** (habitación o **instalaciones** con `mode: "facilities"`) o **ampliación corta** (&lt; 24 h / tras salida estándar). Recepción no tiene este límite.
+3. **Disponibilidad** de la habitación en la franja (otras reservas en `room_id`, usando **check-in/out efectivos** si el vecino tiene P19 aprobado). En modo **facilities** no se comprueba hueco de habitación ni se mueve `check_out`.
+4. **Fidelidad:** `ClientLoyaltyStats.loyalty_tier` (se asegura fila P9 con `ensureLoyaltyStatsRow`; si no hay documento → bronce).
+5. **Decisión:**
+   - Sin disponibilidad → `rejected` (todos los rangos).
+   - Con disponibilidad + **oro** o **plata** → `approved` automático (`auto_approved: true`, `reviewed_by: system:auto`), suma `final_fee` y actualiza `check_in` / `check_out`.
+   - Con disponibilidad + **bronce** → `pending` (recepción con `PATCH …/review`).
+
+**Suplemento de precio:** `horas_diferencia × €/h` (config en Mongo `FlexibilitySettings` + fallback `.env`). Mínimo `min_billable_hours`. Descuento fidelidad sobre el suplemento: plata −15 %, oro −35 %.
+
+**Notificación:** email al cliente cuando la solicitud queda `approved` o `rejected` (incluye auto-aprobación), si `notify_client_on_decision` y SMTP configurado.
+
+### Configuración (`GET` / `PUT` `/settings/flexibility`)
+
+| Campo | Descripción |
+|-------|-------------|
+| `early_checkin_rate_per_hour` | € por hora antes de las 12:00 |
+| `late_checkout_rate_per_hour` | € por hora después de las 11:00 |
+| `min_billable_hours` | Horas mínimas a cobrar |
+| `max_supplement_eur` | Tope opcional (0 = sin tope) |
+| `notify_client_on_decision` | Enviar correo al resolver |
+| `free_access_tiers` | Array `bronze`/`silver`/`gold` con suplemento 0 € |
+| `discount_*_percent` | Descuento sobre suplemento por rango |
+| `early_min_hour` / `late_max_hour` | Ventana horaria permitida |
+| `max_early_hours` / `max_late_hours` | Máx. horas vs 12:00 / 11:00 |
+
+### Campos en `Reservation`
+
+| Campo | Tipo | Descripción |
+|-------|------|-------------|
+| `early_checkin_requested` | objeto o `null` | Solicitud entrada antes de las 12:00 |
+| `late_checkout_requested` | objeto o `null` | Solicitud salida después de las 11:00 |
+
+Cada objeto: `requested_time`, `status`, `loyalty_tier`, `hours_difference`, `rate_per_hour`, `base_fee`, `final_fee`, `availability_ok`, `auto_approved`, `approval_mode`, `client_notified_at`, `review_note`, etc.
+
+### Endpoints canónicos (P19)
+
+| Método | Ruta | Descripción |
+|--------|------|-------------|
+| `PATCH` | `/bookings/:id/request-early-checkin` | Solicitar entrada anticipada |
+| `PATCH` | `/bookings/:id/request-late-checkout` | Solicitar salida tardía (mismo día, después de 11:00) |
+| `GET` | `/bookings/:id/flexibility` | Estado, rango, `fee_preview` y reglas auto-aprobación |
+| `GET` | `/bookings/flexibility/pending` | Cola `pending` (personal) |
+| `PATCH` | `/bookings/:id/flexibility/early-checkin/review` | Aprobar/rechazar (staff; **revalida** disponibilidad) |
+| `PATCH` | `/bookings/:id/flexibility/late-checkout/review` | Igual para salida tardía |
+
+**Compatibilidad:** mismos handlers en `/reservation/:reservation_id/request-early-checkin` (PATCH) y POST legacy `…/flexibility/early-checkin`. Revisión manual también en `/reservation/:id/flexibility/…/review`.
+
+> **No confundir con `extend-stay`:** P19 solo mueve la hora de entrada/salida **el mismo día** de la fecha de la reserva. Para **añadir noches** o salir otro día con posible **cambio de habitación**, usar [Ampliación de estancia](#ampliación-de-estancia-extend-stay).
+
+**Ejemplo (canónico):**
+
+```http
+PATCH /bookings/RSV-00043/request-early-checkin
+Authorization: Bearer <token>
+Content-Type: application/json
+
+{ "requested_time": "2026-05-16T09:00:00.000Z" }
+```
+
+Respuesta típica (plata/oro + hueco libre): `status: "approved"`, `auto_approved: true`, `price` actualizado.
+
+Archivos: `routes/bookingRoutes.js`, `services/flexibilityProgramService.js`, `controllers/flexibilityController.js`, `services/flexibilityInvoiceHelper.js`.
+
+---
+
+## Ampliación de estancia (extend-stay)
+
+Flujo **distinto de P19**: el huésped (o recepción) fija una **nueva fecha/hora de salida** posterior a la actual. Si la habitación está ocupada en el tramo extra, la API marca la RSV anterior con `superseded_by_reservation_id` (apunta a la nueva) y crea una **nueva** en otra habitación libre — **sin** `cancelation_date` (no es cancelación del huésped). La app solo lista la reserva activa vía `GET /reservation/mine`.
+
+| Caso | Cálculo suplemento | Factura `HotelInvoice` |
+|------|-------------------|------------------------|
+| Ampliación **&lt; 24 h** (misma franja horaria) | Horas × `late_checkout_rate_per_hour` (settings P19) | `type: stay_extension` |
+| Ampliación **≥ 1 día** | Noches × tarifa efectiva habitación (con oferta) | `type: stay_extension` |
+
+**Body:** `{ "new_check_out": "2026-05-17" }` (solo fecha → salida 11:00) o ISO con hora (`2026-05-16T18:00:00.000Z`).
+
+| Método | Ruta | Auth |
+|--------|------|------|
+| `PATCH` | `/bookings/:id/extend-stay` | Cliente dueño o personal |
+
+Archivos: `services/stayExtensionService.js`, `controllers/stayExtensionController.js`, `routes/bookingRoutes.js`.
+
+---
+
+## Colección HotelInvoice (facturación multi-concepto)
+
+Además de `Reservation.invoice_number` (checkout recepción), las facturas emitidas se persisten en **`hotelinvoices`**:
+
+| Campo | Descripción |
+|-------|-------------|
+| `invoice_number` | Único (misma numeración que checkout) |
+| `reservation_id` | Reserva principal |
+| `type` | `reservation` \| `early_checkin` \| `late_checkout` \| `stay_extension` |
+| `amount` | Importe TTC del concepto |
+| `description` | Texto legible |
+| `linked_reservation_id` | Si `stay_extension` creó otra RSV |
+
+**Emisión automática:**
+
+- `POST /reservation/:id/confirm-payment` — tras pago simulado en app (`type: reservation`).
+- `POST /reservation/add` con rol `client` — factura al crear reserva.
+- P19 aprobado con `final_fee > 0` — `flexibilityInvoiceHelper`.
+- `extend-stay` — suplemento de ampliación.
+
+**Listados:** `GET /invoices?userId=CLI-xxxxx` y `GET /reservation/invoices/history` leen **`HotelInvoice`** (con `syncLegacyInvoicesFromReservations` y backfill de reservas activas sin factura al abrir histórico).
+
+**PDF:** `GET /reservation/:id/invoice?invoice_number=FAC-…` descarga el PDF del número indicado (varias facturas por reserva).
+
+Archivos: `models/HotelInvoice.js`, `services/invoiceEmissionService.js`, `controllers/invoiceController.js`.
+
+---
+
+## P9 · Historial de estancias por usuario
+
+Complementa `GET /loyalty/me` con historial paginado y estadísticas enriquecidas para **WPF** (ficha cliente) y futuras vistas.
+
+| Método | Ruta | Descripción | Auth |
+|--------|------|-------------|------|
+| `GET` | `/users/:id/history` | Estancias completadas/pasadas con habitación, valoración, filtros `page`, `limit`, fechas | Dueño o admin/employee |
+| `GET` | `/users/:id/stats` | Totales, temporada favorita, habitación más usada, racha, etc. | Igual |
+| `GET` | `/user/:userId/history` | Alias (mismo handler) | Igual |
+| `GET` | `/user/:userId/stats` | Alias | Igual |
+
+`GET /loyalty/me` incluye campos P9 extra (`favorite_season`, `top_room_id`, `current_streak`, …) tras recálculo.
+
+Archivos: `services/userStayService.js`, `controllers/userStayController.js`, `routes/usersRoutes.js`, `routes/userRoutes.js`.
 
 ---
 
@@ -527,23 +860,47 @@ Los detalles de UI quedan en el README de cada cliente cuando se implementen.
 | `POST`   | `/reservation/cancel`             | Cancelar reserva (body)                  | Sí   |
 | `DELETE` | `/reservation/cancel/:id`         | Cancelar reserva (parámetro de ruta)     | Sí   |
 | `PATCH`  | `/reservation/update`             | Actualizar reserva parcialmente          | Sí   |
-| `GET`    | `/reservation/mine`               | Reservas del usuario autenticado         | Sí   |
+| `GET`    | `/reservation/mine`               | Reservas activas del usuario (`cancelation_date` nulo y sin `superseded_by_reservation_id`) | Sí   |
+| `GET`    | `/loyalty/me`                     | P9: estadísticas + rango (recalcula y guarda) | Sí (cliente) |
+| `POST`   | `/loyalty/me/sync`                | P9: forzar recálculo desde reservas     | Sí (cliente) |
+| `GET`    | `/loyalty/user/:userId`           | P9: estadísticas de un cliente           | Sí (admin, employee) |
 | `GET`    | `/reservation/allActive`          | Reservas activas (incluye `room_image`)  | Sí   |
 | `GET`    | `/reservation/all`                | Todas las reservas                       | Sí   |
 | `POST`   | `/reservation/getPrice`           | Calcular precio (usa **precio nocturno con oferta** de la habitación) | Sí   |
 | `POST`   | `/reservation/getCancelationPrice`| Calcular penalización por cancelación    | Sí   |
+| `POST`   | `/reservation/check-in`           | Check-in en **recepción** (hora real; recargo opcional si tardío) | Sí (admin, employee) |
+| `GET`    | `/reservation/:id/check-in-status` | Estado ventana horaria y si puede registrarse | Sí (admin, employee) |
 | `POST`   | `/reservation/checkout`           | Checkout: `invoice_number`, `checkout_completed_at`, **`invoice_breakdown`** | Sí (admin, employee) |
-| `GET`    | `/reservation/invoices/history`    | Histórico de reservas con factura emitida | Sí (admin, employee) |
-| `GET`    | `/reservation/:reservation_id/billing-info` | Pasarela **ficticia**: JSON con estado de factura y ruta de descarga | Sí   |
-| `GET`    | `/reservation/:reservation_id/invoice` | Descarga **PDF** de factura (dueño o personal) | Sí   |
+| `GET`    | `/reservation/invoices/history`    | Histórico **HotelInvoice** (admin/employee; sync legacy al listar) | Sí (admin, employee) |
+| `POST`   | `/reservation/:id/confirm-payment` | Emite factura `reservation` tras pago simulado (app) | Sí (dueño o personal) |
+| `GET`    | `/reservation/:reservation_id/billing-info` | Pasarela **ficticia** + rutas de justificante y factura | Sí   |
+| `GET`    | `/reservation/:reservation_id/booking-receipt` | Descarga **PDF** justificante (no fiscal) | Sí   |
+| `GET`    | `/reservation/:reservation_id/invoice` | Descarga **PDF** factura fiscal (post-checkout) | Sí   |
 | `POST`   | `/reservation/:reservation_id/invoice/email` | Reenviar factura por **correo** (PDF adjunto; solo admin/empleado) | Sí (admin, employee) |
 | `GET`    | `/reservation/:id/audit`          | Historial de auditoría                   | Sí   |
+| `PATCH`  | `/bookings/:id/request-early-checkin` | P19: solicitud entrada anticipada (+ auto-aprobación) | Sí   |
+| `PATCH`  | `/bookings/:id/request-late-checkout` | P19: solicitud salida tardía | Sí   |
+| `PATCH`  | `/bookings/:id/extend-stay` | Ampliación salida (+ cambio habitación si conflicto) | Sí   |
+| `GET`    | `/bookings/:id/flexibility` | P19: estado + preview tarifas | Sí   |
+| `GET`    | `/bookings/flexibility/pending` | P19: cola pendientes (bronce) | Sí (admin, employee) |
+| `PATCH`  | `/bookings/:id/flexibility/early-checkin/review` | P19: aprobar/rechazar entrada | Sí (admin, employee) |
+| `PATCH`  | `/bookings/:id/flexibility/late-checkout/review` | P19: aprobar/rechazar salida | Sí (admin, employee) |
+| `GET`    | `/users/:id/history` | P9: historial estancias paginado | Sí   |
+| `GET`    | `/users/:id/stats` | P9: estadísticas enriquecidas | Sí   |
+| `GET`    | `/settings/flexibility` | P19: tarifas €/h y notificaciones | Sí (admin, employee) |
+| `PUT`    | `/settings/flexibility` | P19: guardar configuración suplemento | Sí (admin, employee) |
+| `GET`    | `/reservation/:id/flexibility`    | Igual que arriba (alias) | Sí   |
+| `PATCH`  | `/reservation/:id/request-early-checkin` | Alias PATCH solicitud | Sí   |
+| `POST`   | `/reservation/:id/flexibility/early-checkin` | Legacy (mismo flujo) | Sí   |
+| `PATCH`  | `/reservation/:id/flexibility/early-checkin/review` | P19: aprobar/rechazar | Sí (admin, employee) |
+| `PATCH`  | `/reservation/:id/flexibility/late-checkout/review` | P19: aprobar/rechazar | Sí (admin, employee) |
+| `GET`    | `/reservation/flexibility/pending` | P19: cola pendientes | Sí (admin, employee) |
 
 ### Facturas (`/invoices`)
 
 | Método   | Ruta                    | Descripción | Auth |
 |----------|-------------------------|-------------|------|
-| `GET`    | `/invoices?userId=…`    | Reservas con `invoice_number` del usuario (`user_id` en query válido igual). Cliente solo el propio id | Sí   |
+| `GET`    | `/invoices?userId=…`    | Lista documentos **HotelInvoice** del usuario (tipos `reservation`, P19, `stay_extension`, …). Cliente solo el propio id | Sí   |
 
 ### Habitaciones
 
@@ -626,6 +983,13 @@ La respuesta incluye `invoice_breakdown` (desglose congelado). Para pantallas de
 
 ```http
 GET /reservation/RSV-00001/billing-info
+Authorization: Bearer <token>
+```
+
+Respuesta (fragmento): incluye `download_booking_receipt` y, si procede, `download_invoice`.
+
+```http
+GET /reservation/RSV-00001/booking-receipt
 Authorization: Bearer <token>
 ```
 
@@ -747,6 +1111,54 @@ Los clientes se actualizaron para usar esos verbos.
 
 ### 9. Facturación PDF (checkout)
 
-Resumen: campos `invoice_number`, `checkout_completed_at` e **`invoice_breakdown`**; **checkout** solo personal; **PDF** con desglose P5; **`POST /reservation/:id/invoice/email`** reenvío del PDF por **SMTP** (Nodemailer, adjunto); **`GET /invoices?userId=`** facturas por usuario en **`Reservation`**; **`GET …/billing-info`** pasarela ficticia; **`GET /reservation/invoices/history`** histórico global admin/empleado. **Detalle:** ver **[Facturación PDF (factura descargable)](#facturación-pdf-factura-descargable)**.
+Resumen: campos `invoice_number`, `checkout_completed_at` e **`invoice_breakdown`**; **checkout** solo personal; **PDF** con desglose P5; **`POST /reservation/:id/invoice/email`** reenvío del PDF por **SMTP** (Nodemailer, adjunto); **`GET /invoices?userId=`** facturas por usuario en **`Reservation`**; **`GET …/billing-info`** pasarela ficticia; **`GET /reservation/invoices/history`** histórico global admin/empleado. **Detalle:** ver **[Facturación PDF (justificante y factura fiscal)](#facturación-pdf-justificante-y-factura-fiscal)**.
+
+### 10. Justificante PDF tras pago simulado
+
+**Problema:** el huésped pagaba (simulado) en la app pero no tenía ningún PDF hasta el checkout en recepción.
+
+**Solución:** `GET /reservation/:reservation_id/booking-receipt` genera un **justificante no fiscal** con datos de reserva e importe TTC. `billing-info` expone `download_booking_receipt`. La factura con `invoice_number` sigue siendo exclusiva del checkout. Índice único en `invoice_number` como **parcial** (`sparse`) para permitir muchas reservas con `null` sin colisión E11000.
+
+### 11. Check-in en recepción (WPF)
+
+**Problema:** no había forma de registrar la llegada del huésped en recepción (distinto del campo `check_in` de la reserva).
+
+**Solución:** campos `reception_check_in_at`, `reception_check_in_late`, `reception_check_in_late_fee`; `POST /reservation/check-in` y `GET …/check-in-status`; ventana horaria 12:00–22:00 del día de entrada; fuera de ventana → check-in tardío con recargo (`CHECK_IN_LATE_FEE_EUR`). `GET /allActive` devuelve `guest_name` y `guest_dni` para el panel de control.
+
+### 12. P9 · Estadísticas y fidelidad (API + Android)
+
+**Objetivo:** agregar datos de todas las reservas del cliente en una colección propia y mostrar rango/noches/gasto en la app.
+
+**Solución:** `clientLoyaltyStatsService` recalcula desde `reservations`, hace upsert en `ClientLoyaltyStats`, expone `GET /loyalty/me`. Gasto y noches incluyen reservas activas (pago al reservar). Sincronización tras alta/cancelación/checkout.
+
+### 13. P19 · Programa flexibilidad (API + clientes)
+
+**Objetivo:** entrada anticipada y salida tardía con suplemento por horas y rango de fidelidad (P9).
+
+**Solución:** `PATCH /bookings/:id/request-*`, disponibilidad con horarios efectivos de vecinos, `ClientLoyaltyStats.loyalty_tier`, auto-aprobación plata/oro; bronce `pending` + revisión WPF (revalida hueco al aprobar). Suplemento `horas × €/h`, settings en Mongo, email al resolver, factura `HotelInvoice` si hay cargo. UI: Android (botones separados check-in anticipado / check-out tardío), WPF (panel inicio + detalle reserva + reglas; sin etiqueta «P19» en pantalla).
+
+### 14. Colección HotelInvoice y confirm-payment
+
+**Problema:** facturas solo en `Reservation.invoice_number` tras checkout; suplementos P19/ampliación sin trazabilidad unificada.
+
+**Solución:** modelo `HotelInvoice`, `invoiceEmissionService` idempotente, `POST /reservation/:id/confirm-payment` y emisión al reservar como cliente; listados `/invoices` e histórico WPF desde la colección; PDF con query `invoice_number`.
+
+### 15. Ampliación de estancia (extend-stay)
+
+**Problema:** huésped necesita más noches u horas de salida sin mezclar con P19 (mismo día).
+
+**Solución:** `PATCH /bookings/:id/extend-stay` con tarifa horaria (&lt;24 h) o por noches; conflicto → nueva habitación + `superseded_by_reservation_id` en la anterior (sin `cancelation_date`); factura `stay_extension`.
+
+### 16. P9 historial de estancias (API + WPF)
+
+**Solución:** `GET /users/:id/history` y `/stats`; ficha **Estancias** en gestión de usuarios WPF; Android **Mis estancias** + insights en **Estadísticas**.
+
+### 17. Configuración operativa, PDF de factura y UX recepción (estado actual)
+
+- **`operationalsettings`:** activar/desactivar escritura en `booking_audit_log` (`GET/PUT /settings/operational`); WPF → checkbox en **Auditorías**.
+- **Factura PDF:** diseño tipo factura hotel (emisor/cliente, tabla de conceptos, totales) en `invoicePdfService.js`.
+- **P19 cliente:** límite **12 h** tras 11:00; salida tardía en modo **instalaciones** (`late_mode: facilities`, hasta 20:00).
+- **Cola WPF:** pestañas Activas/Inactivas, orden por fecha; diálogo de rechazo ampliado.
+- **Panel Inicio WPF:** scroll completo de tarjetas, filtro y orden de reservas activas.
 
 ---

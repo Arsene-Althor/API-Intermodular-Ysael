@@ -14,6 +14,7 @@ const {
   requireRole,
   requireOwnerOrAdmin,
 } = require("../middleware/authMiddleware.js");
+const userStayController = require("../controllers/userStayController");
 const upload = require("../middleware/diskStorage.js");
 
 //Middleware para manejar errores de Multer
@@ -43,6 +44,10 @@ router.post(
 ); //POST /api/users/add (solo admin)
 
 router.get('/get', requireLogin, getAllUsers); //GET /api/users/get (solo usuarios logueados)
+
+/** P9 · Historial y estadísticas de estancias (antes de /modify/:userId). */
+router.get('/:userId/history', requireLogin, userStayController.getHistory);
+router.get('/:userId/stats', requireLogin, userStayController.getStats);
 
 router.patch(
   "/modify/:userId",

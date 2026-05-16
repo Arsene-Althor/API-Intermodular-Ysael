@@ -1,4 +1,5 @@
 const BookingAuditLog = require('../models/BookingAuditLog.js');
+const { isBookingAuditEnabled } = require('./operationalSettingsService');
 
 // Cliente → 'user', admin y empleados → 'employee' (así lo pide el modelo)
 function actorTypeFromRole(role) {
@@ -22,6 +23,9 @@ const logBookingChange = async ({
   new_state,
 }) => {
   try {
+    const enabled = await isBookingAuditEnabled();
+    if (!enabled) return;
+
     await BookingAuditLog.create({
       booking_id,
       action,
@@ -52,6 +56,11 @@ const ETIQUETA_CAMPO = {
   invoice_breakdown: 'Desglose factura',
   invoice_number: 'Nº factura',
   checkout_completed_at: 'Checkout completado',
+  reception_check_in_at: 'Check-in recepción',
+  reception_check_in_late: 'Check-in tardío',
+  reception_check_in_late_fee: 'Recargo check-in tardío',
+  early_checkin_requested: 'Solicitud entrada anticipada',
+  late_checkout_requested: 'Solicitud salida tardía',
 };
 
 function valorTextoAuditoria(val) {

@@ -8,6 +8,17 @@ const {
   loadExtraDocsForRoom,
 } = require('../services/invoiceBreakdownService');
 const { nextInvoiceNumber } = require('../services/invoiceNumberService');
+const { evaluateReceptionCheckIn } = require('../services/receptionCheckInService');
+const { syncClientLoyaltyStats } = require('../services/clientLoyaltyStatsService');
+const { emitHotelInvoice } = require('../services/invoiceEmissionService');
+
+async function syncLoyaltyForUser(userId) {
+  try {
+    await syncClientLoyaltyStats(userId);
+  } catch (e) {
+    console.error('syncClientLoyaltyStats', userId, e.message);
+  }
+}
 
 // Quién puede ver o tocar una reserva concreta (dueño del cliente o personal)
 function puedeVerReserva(req, reservaDoc) {
@@ -16,13 +27,14 @@ function puedeVerReserva(req, reservaDoc) {
   return reservaDoc.user_id === req.user.user_id;
 }
 
-//Función para comprobar ocupación
+//Función para comprobar ocupación (acepta Date ya normalizados o strings parseables)
 async function checkOcupation(check_in, check_out, room_id, reservation_id) {
-  //Las fechas de entrada y salida siempre son de 12 a 11
-  let nuevaEntrada = new Date(check_in);
+  const nuevaEntrada =
+    check_in instanceof Date ? new Date(check_in.getTime()) : new Date(check_in);
   nuevaEntrada.setHours(12, 0, 0, 0);
 
-  let nuevaSalida = new Date(check_out);
+  const nuevaSalida =
+    check_out instanceof Date ? new Date(check_out.getTime()) : new Date(check_out);
   nuevaSalida.setHours(11, 0, 0, 0);
 
   //Comprobamos que la habitación no este ya reservada o cancelada exceptuando la misma habitación
@@ -57,6 +69,10 @@ async function addReservation(req, res) {
 
     const createdBy = req.user.user_id;
 
+    if (req.user.role === 'client' && String(user_id).trim() !== String(req.user.user_id).trim()) {
+      return res.status(403).json({ error: 'No puedes crear reservas para otro usuario' });
+    }
+
     //Validaciones para datos introducidos
     let user = await User.findOne({ user_id });
     if (!user) return res.status(400).json({ error: 'El usuario introducido no exite' });
@@ -68,14 +84,14 @@ async function addReservation(req, res) {
     const precioNum = Number.parseFloat(price).valueOf();
 
     if (isNaN(precioNum) || precioNum <= 0) {
-      return res.status(400).json(precioNum);
+      return res.status(400).json({ error: 'Precio no válido' });
     }
 
     let nuevaEntrada = new Date(check_in);
-    nuevaEntrada.setHours(12, 0);
+    nuevaEntrada.setHours(12, 0, 0, 0);
 
     let nuevaSalida = new Date(check_out);
-    nuevaSalida.setHours(11, 0);
+    nuevaSalida.setHours(11, 0, 0, 0);
 
     //Permitiremos reservas el mismo dia que entrada o en su defecto antes de las 12 del dia actual
     let ayer = new Date();
@@ -86,21 +102,22 @@ async function addReservation(req, res) {
     if (nuevaEntrada >= nuevaSalida) return res.status(400).json({ error: 'La fecha de entrada no puede ser superiror a la de salida'})
 
     let new_id;
-    let ultimo_id = await Reservation.findOne()
-      .sort({ createdAt: -1 })
-      .select('reservation_id');
-
-    if (!ultimo_id) {
-      // En caso de no tener ninguna reserva la creamos automaticamente con el primer id 
-      new_id = "RSV-00001"
-    } else {
-      //Generamos el nuevo id de reserva
-      let arr_id = ultimo_id.reservation_id.split("-");
-      num_id = parseInt(arr_id[1])
-      new_id = "RSV-" + String(num_id + 1).padStart(5, '0');
+    const idRegex = /^RSV-(\d{5})$/;
+    const todas = await Reservation.find({ reservation_id: { $regex: /^RSV-\d{5}$/ } })
+      .select('reservation_id')
+      .lean();
+    let maxNum = 0;
+    for (const d of todas) {
+      const m = idRegex.exec(String(d.reservation_id || ''));
+      if (m) {
+        const n = parseInt(m[1], 10);
+        if (!Number.isNaN(n) && n > maxNum) maxNum = n;
+      }
     }
-    //Llamamaos al metodo para comprobar habitaciones
-    let verif = await checkOcupation(check_in, check_out, room_id);
+    new_id = `RSV-${String(maxNum + 1).padStart(5, '0')}`;
+
+    // Misma normalización de fechas que se persiste
+    let verif = await checkOcupation(nuevaEntrada, nuevaSalida, room_id);
 
     if (verif.respuesta) {
       let reservation = new Reservation({ reservation_id: new_id, room_id, user_id, check_in: nuevaEntrada, check_out: nuevaSalida, price: precioNum, createdBy });
@@ -116,13 +133,51 @@ async function addReservation(req, res) {
         new_state: reservation,
       });
 
+      await syncLoyaltyForUser(user_id);
+
+      if (req.user.role === 'client') {
+        try {
+          await emitHotelInvoice({
+            reservationId: reservation.reservation_id,
+            type: 'reservation',
+            amount: precioNum,
+          });
+          reservation = await Reservation.findOne({ reservation_id: new_id });
+        } catch (invErr) {
+          if (invErr.status !== 409) {
+            console.error('emitHotelInvoice on addReservation', invErr);
+          }
+        }
+      }
+
       return res.json(reservation)
     } else {
       return res.status(400).json({ error: verif.error })
     }
 
   } catch (err) {
-    console.log(err);
+    console.error(err);
+    if (err.name === 'ValidationError') {
+      return res.status(400).json({
+        error: 'Datos de reserva no válidos',
+        detalle: err.message,
+        erroresValidacion: err.errors,
+      });
+    }
+    if (err.code === 11000) {
+      const key = err.keyPattern ? Object.keys(err.keyPattern)[0] : '';
+      if (key === 'invoice_number') {
+        return res.status(500).json({
+          error: 'Índice de facturas en MongoDB desactualizado',
+          detalle:
+            'En la carpeta de la API ejecuta una vez: node scripts/fix-reservation-invoice-index.js y reinicia el servidor.',
+        });
+      }
+      return res.status(409).json({
+        error: 'Identificador duplicado; vuelve a intentar',
+        detalle: err.message,
+      });
+    }
     res.status(500).json({ error: 'Error al insertar reserva', detalle: err.message, erroresValidacion: err.errors });
   }
 }
@@ -169,6 +224,8 @@ async function cancelReservation(req, res) {
       new_state: reservation,
     });
 
+    await syncLoyaltyForUser(reservation.user_id);
+
     res.json({ mensaje: 'Cancelada correctamente', reservation });
   } catch (err) {
     res.status(500).json({ error: 'Error al cancelar la reserva ', detalle: err.message });
@@ -209,10 +266,24 @@ async function getActiveReservations(req, res) {
     const roomIds = [...new Set(reservations.map(r => String(r.room_id).trim()))];
     const rooms = await Room.find({ room_id: { $in: roomIds } }).select('room_id image').lean();
     const imgByRoom = Object.fromEntries(rooms.map(r => [String(r.room_id).trim(), r.image]));
+
+    const userIds = [...new Set(reservations.map(r => String(r.user_id).trim()))];
+    const users = await User.find({ user_id: { $in: userIds } })
+      .select('user_id name surname dni')
+      .lean();
+    const userById = Object.fromEntries(users.map(u => [String(u.user_id).trim(), u]));
+
     const enriched = reservations.map(r => {
       const rid = String(r.room_id).trim();
       const img = imgByRoom[rid];
-      return { ...r, room_image: img || null };
+      const u = userById[String(r.user_id).trim()];
+      const guestName = u ? `${u.name || ''} ${u.surname || ''}`.trim() : null;
+      return {
+        ...r,
+        room_image: img || null,
+        guest_name: guestName || null,
+        guest_dni: u?.dni || null,
+      };
     });
     res.json(enriched)
 
@@ -225,7 +296,15 @@ async function getActiveReservations(req, res) {
 async function getMine(req, res) {
   try {
     const user_id = req.user.user_id;
-    const reservations = await Reservation.find({ user_id })
+    const reservations = await Reservation.find({
+      user_id,
+      cancelation_date: null,
+      $or: [
+        { superseded_by_reservation_id: null },
+        { superseded_by_reservation_id: '' },
+        { superseded_by_reservation_id: { $exists: false } },
+      ],
+    }).lean();
     if (!reservations) return res.status(404).json({ error: 'El usuario no dispone de reservas' });
     res.json(reservations);
   } catch (err) {
@@ -267,7 +346,7 @@ async function updateReservation(req, res) {
     if (reservation.check_in <= hoy || !check_in) {
       nuevaEntrada = reservation.check_in;
       if (nuevaSalida < hoy) {
-        return res.status(400).json({ error: 'La reserva esta vencida no se puede modificar' });
+        return res.status(400).json({ error: 'La reserva está vencida; no se puede modificar' });
       }
     }
 
@@ -278,8 +357,8 @@ async function updateReservation(req, res) {
     }
     
 
-    //Validación habitacion no ocupada
-    let verif = await checkOcupation(check_in, check_out, room_id, reservation_id);
+    //Validación habitacion no ocupada (mismas fechas normalizadas que se guardan)
+    let verif = await checkOcupation(nuevaEntrada, nuevaSalida, room_id, reservation_id);
 
     if (verif.respuesta) {
       reservation.room_id = room_id;
@@ -330,6 +409,9 @@ async function calculatePrice(req, res) {
     const diferencia = nuevaSalida - nuevaEntrada;
 
     const dias = Math.ceil(diferencia / (1000 * 60 * 60 * 24));
+    if (!Number.isFinite(dias) || dias < 1) {
+      return res.status(400).json({ error: 'Rango de fechas inválido (se requiere al menos 1 noche)' });
+    }
 
     const base = Number(room.price_per_night) || 0;
     let nightly = base;
@@ -339,10 +421,12 @@ async function calculatePrice(req, res) {
 
     let precioReserva = dias * nightly;
 
-    let descuento = precioReserva * user.discount;
+    const discountRate = Math.min(1, Math.max(0, Number(user.discount) || 0));
+    const descuento = precioReserva * discountRate;
     precioReserva = precioReserva - descuento;
 
-    return res.json({ precio: precioReserva })
+    const precioFinal = Number.isFinite(precioReserva) ? Number(precioReserva.toFixed(2)) : 0;
+    return res.json({ precio: precioFinal })
 
   } catch (err) {
     res.status(500).json({ error: 'Error al obtener precio', detalle: err.message });
@@ -392,6 +476,145 @@ async function calculateCancelationPrice(req, res) {
 
 }
 
+/** GET /reservation/:reservation_id/check-in-status — ventana horaria y si puede registrarse (personal). */
+async function getReceptionCheckInStatus(req, res) {
+  try {
+    const { reservation_id } = req.params;
+    const reservation = await Reservation.findOne({ reservation_id }).lean();
+    if (!reservation) return res.status(404).json({ error: 'Reserva no encontrada' });
+    if (!puedeVerReserva(req, reservation)) {
+      return res.status(403).json({ error: 'No autorizado' });
+    }
+
+    const clientUser = await User.findOne({ user_id: reservation.user_id })
+      .select('name surname dni email user_id')
+      .lean();
+
+    const evalResult = evaluateReceptionCheckIn(reservation);
+    const guestName = clientUser
+      ? `${clientUser.name || ''} ${clientUser.surname || ''}`.trim()
+      : null;
+
+    let message = '';
+    switch (evalResult.status) {
+      case 'already':
+        message = 'Check-in ya registrado en recepción.';
+        break;
+      case 'cancelled':
+        message = 'Reserva cancelada.';
+        break;
+      case 'expired':
+        message = 'La estancia ya ha finalizado; no se puede registrar check-in.';
+        break;
+      case 'too_early':
+        message = `Fuera de horario: el check-in en recepción abre el ${evalResult.window_start.toISOString().slice(0, 16).replace('T', ' ')}.`;
+        break;
+      case 'normal':
+        message = 'Dentro del horario estándar de check-in (recepción).';
+        break;
+      case 'late':
+        message = `Check-in fuera de horario. Se puede registrar con recargo de ${evalResult.late_fee} €.`;
+        break;
+      default:
+        message = '';
+    }
+
+    return res.json({
+      reservation_id,
+      status: evalResult.status,
+      message,
+      can_register: evalResult.status === 'normal' || evalResult.status === 'late',
+      requires_late_confirmation: evalResult.status === 'late',
+      late_fee: evalResult.late_fee ?? 0,
+      window_start: evalResult.window_start ?? null,
+      window_end: evalResult.window_end ?? null,
+      reception_check_in_at: reservation.reception_check_in_at ?? null,
+      reception_check_in_late: Boolean(reservation.reception_check_in_late),
+      reception_check_in_late_fee: reservation.reception_check_in_late_fee ?? 0,
+      guest_name: guestName,
+      guest_dni: clientUser?.dni ?? null,
+      guest_email: clientUser?.email ?? null,
+      check_in: reservation.check_in,
+      check_out: reservation.check_out,
+      room_id: reservation.room_id,
+      price: reservation.price,
+    });
+  } catch (err) {
+    console.error('getReceptionCheckInStatus', err);
+    return res.status(500).json({ error: 'Error al consultar check-in', detalle: err.message });
+  }
+}
+
+/** POST /reservation/check-in — solo personal. Registra llegada en recepción. */
+async function registerReceptionCheckIn(req, res) {
+  try {
+    const { reservation_id, accept_late } = req.body;
+    if (!reservation_id) return res.status(400).json({ error: 'Falta reservation_id' });
+
+    const reservation = await Reservation.findOne({ reservation_id });
+    if (!reservation) return res.status(404).json({ error: 'Reserva no encontrada' });
+
+    const evalResult = evaluateReceptionCheckIn(reservation);
+    if (evalResult.status === 'already') {
+      return res.status(400).json({
+        error: 'Check-in ya registrado',
+        reception_check_in_at: reservation.reception_check_in_at,
+      });
+    }
+    if (evalResult.status === 'cancelled') {
+      return res.status(400).json({ error: 'Reserva cancelada' });
+    }
+    if (evalResult.status === 'expired') {
+      return res.status(400).json({ error: 'La estancia ya ha finalizado' });
+    }
+    if (evalResult.status === 'too_early') {
+      return res.status(400).json({
+        error: 'Fuera del horario de check-in',
+        detalle: `Ventana desde ${evalResult.window_start.toISOString()}`,
+        window_start: evalResult.window_start,
+        window_end: evalResult.window_end,
+      });
+    }
+    if (evalResult.status === 'late') {
+      if (!accept_late) {
+        return res.status(400).json({
+          error: 'Check-in tardío: confirme el recargo',
+          late_fee: evalResult.late_fee,
+          requires_late_confirmation: true,
+        });
+      }
+      const fee = evalResult.late_fee;
+      reservation.reception_check_in_late = true;
+      reservation.reception_check_in_late_fee = fee;
+      reservation.price = Math.round((Number(reservation.price) + fee) * 100) / 100;
+    } else {
+      reservation.reception_check_in_late = false;
+      reservation.reception_check_in_late_fee = 0;
+    }
+
+    const now = new Date();
+    reservation.reception_check_in_at = now;
+    await reservation.save();
+
+    await logBookingChange({
+      booking_id: reservation.reservation_id,
+      action: 'UPDATED',
+      actor_id: req.user.user_id,
+      actor_type: actorTypeFromRole(req.user.role),
+      previous_state: req.bookingAuditPreviousState,
+      new_state: reservation,
+    });
+
+    return res.json({
+      mensaje: evalResult.status === 'late' ? 'Check-in tardío registrado' : 'Check-in registrado',
+      reservation,
+    });
+  } catch (err) {
+    console.error('registerReceptionCheckIn', err);
+    return res.status(500).json({ error: 'Error al registrar check-in', detalle: err.message });
+  }
+}
+
 /** POST /reservation/checkout — solo personal. Asigna invoice_number y checkout_completed_at. */
 async function checkoutReservation(req, res) {
   try {
@@ -427,6 +650,8 @@ async function checkoutReservation(req, res) {
     reservation.checkout_completed_at = now;
     await reservation.save();
 
+    await syncLoyaltyForUser(reservation.user_id);
+
     await logBookingChange({
       booking_id: reservation.reservation_id,
       action: 'UPDATED',
@@ -460,4 +685,6 @@ module.exports = {
   calculatePrice,
   calculateCancelationPrice,
   checkoutReservation,
+  getReceptionCheckInStatus,
+  registerReceptionCheckIn,
 };
