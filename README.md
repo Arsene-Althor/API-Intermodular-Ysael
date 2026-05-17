@@ -332,7 +332,30 @@ bookingAuditLogSchema.index({ booking_id: 1, timestamp: 1 });
 | `logBookingChange({...})` | Inserta un registro de auditoría; si falla, registra el error sin interrumpir la operación |
 | `describeReservationAuditChanges(prev, next, action)` | Compara dos estados campo a campo y genera `resumen_cambios` (textos legibles) y `detalle_cambios` (array estructurado) |
 
-El resumen de diferencias se calcula **al vuelo** en cada `GET …/audit`, no se almacena en MongoDB: en la colección solo están `previous_state` y `new_state`.
+El resumen de diferencias se calcula **al vuelo** en cada `GET …/audit` y `GET /reservation/audits`, no se almacena en MongoDB: en la colección solo están `previous_state` y `new_state`.
+
+**Campos extra en la respuesta JSON** (WPF y Android los consumen para mostrar antes/después):
+
+| Campo | Tipo | Descripción |
+|-------|------|-------------|
+| `resumen_cambios` | `string[]` | Líneas legibles, p. ej. `Precio: 120 → 150` |
+| `detalle_cambios` | `object[]` | Por cada campo modificado: `campo`, `etiqueta`, `antes`, `despues` (valores JSON crudos) |
+
+Ejemplo de ítem en `GET /reservation/audits`:
+
+```json
+{
+  "booking_id": "RSV-00042",
+  "action": "UPDATED",
+  "actor_id": "EMP-001",
+  "timestamp": "2026-05-17T10:30:00.000Z",
+  "resumen_cambios": ["Precio: 120 → 150", "Salida: 2026-05-20 11:00 → 2026-05-21 11:00"],
+  "detalle_cambios": [
+    { "campo": "price", "etiqueta": "Precio", "antes": 120, "despues": 150 },
+    { "campo": "check_out", "etiqueta": "Salida", "antes": "2026-05-20T11:00:00.000Z", "despues": "2026-05-21T11:00:00.000Z" }
+  ]
+}
+```
 
 **Lógica de `describeReservationAuditChanges` (sencilla):**
 
@@ -1160,5 +1183,11 @@ Resumen: campos `invoice_number`, `checkout_completed_at` e **`invoice_breakdown
 - **P19 cliente:** límite **12 h** tras 11:00; salida tardía en modo **instalaciones** (`late_mode: facilities`, hasta 20:00).
 - **Cola WPF:** pestañas Activas/Inactivas, orden por fecha; diálogo de rechazo ampliado.
 - **Panel Inicio WPF:** scroll completo de tarjetas, filtro y orden de reservas activas.
+
+### 18. Limpieza y auditoría enriquecida
+
+- Eliminados `express-session`, script `check_rooms.js`, exports muertos en servicios.
+- Respuesta de auditoría documentada: `detalle_cambios` con **antes/después** por campo (WPF: columnas y tabla desplegable).
+- App Android: paquetes `core` / `data` / `feature` (reorganización).
 
 ---

@@ -375,8 +375,6 @@ function applyApprovedFlexibilityToReservation(reservation, kind, block) {
 }
 
 module.exports = {
-  TIERS,
-  REQUEST_STATUSES,
   getLoyaltyTierForUser,
   ensureLoyaltyStatsRow,
   computeFlexibilityPricing,
@@ -390,9 +388,6 @@ module.exports = {
   buildRequestPayload,
   resolveApprovalDecision,
   applyApprovedFlexibilityToReservation,
-  envFlagTrue,
   standardCheckIn,
   standardCheckOut,
-  getEffectiveCheckIn,
-  getEffectiveCheckOut,
 };
