@@ -6,8 +6,41 @@ API REST desarrollada con **Node.js**, **Express** y **MongoDB (Mongoose)** para
 
 ---
 
+## Arquitectura del sistema
+
+```mermaid
+flowchart TB
+    subgraph clientes["Clientes"]
+        WPF["WPF · Recepción<br/>admin / empleado"]
+        APP["Android · Huésped<br/>Kotlin + Compose"]
+    end
+    subgraph servidor["Servidor Node.js"]
+        API["Express REST<br/>JWT + roles"]
+        PDF["pdfkit<br/>justificante + factura"]
+        MAIL["Nodemailer<br/>P19 / recuperación"]
+    end
+    subgraph datos["MongoDB Atlas / local"]
+        DB[("11 colecciones<br/>reservations central")]
+    end
+    WPF -->|HTTP JSON| API
+    APP -->|HTTP JSON| API
+    API --> DB
+    API --> PDF
+    API --> MAIL
+```
+
+| Capa | Responsabilidad |
+|------|-----------------|
+| **Clientes** | UI; nunca tocan MongoDB directamente |
+| **API** | Reglas de negocio, auth, PDF, auditoría |
+| **MongoDB** | Persistencia; relaciones por IDs (`RSV-`, `HAB-`, `CLI-`) |
+
+---
+
 ## Tabla de contenidos
 
+- [Arquitectura del sistema](#arquitectura-del-sistema)
+- [Diagramas y flujos visuales](#diagramas-y-flujos-visuales)
 - [Puesta en marcha](#puesta-en-marcha)
 - [Tecnologías utilizadas](#tecnologías-utilizadas)
 - [Estructura del proyecto](#estructura-del-proyecto)
@@ -76,6 +109,125 @@ npm start
 ```
 
 El servidor arranca en el puerto definido en `PORT`. Si la variable no está configurada, se utiliza el puerto `3000` por defecto.
+
+---
+
+## Diagramas y flujos visuales
+
+### Autenticación (JWT)
+
+```mermaid
+sequenceDiagram
+    participant C as Cliente WPF / Android
+    participant A as POST /auth/login
+    participant DB as users
+
+    C->>A: email + password
+    A->>DB: bcrypt.compare
+    DB-->>A: user + role
+    A-->>C: JWT + user_id
+    Note over C: Header Authorization Bearer en peticiones siguientes
+```
+
+### Ciclo de vida de una reserva
+
+```mermaid
+stateDiagram-v2
+    [*] --> Creada: POST /reservation/add
+    Creada --> Activa: pago simulado OK
+    Activa --> Activa: PATCH update / P19 aprobado
+    Activa --> Cancelada: cancel
+    Activa --> Checkout: POST checkout (WPF)
+    Checkout --> [*]: invoice_number + HotelInvoice
+    Activa --> Sustituida: extend-stay otra habitación
+    Sustituida --> [*]: superseded_by_reservation_id
+```
+
+### Flujo de facturación (dos PDF)
+
+```mermaid
+flowchart LR
+    A[Reserva creada] --> B[GET booking-receipt]
+    B --> C[PDF justificante<br/>no fiscal]
+    A --> D[Checkout recepción]
+    D --> E[invoice_number + breakdown]
+    E --> F[HotelInvoice type=reservation]
+    E --> G[GET invoice PDF]
+    G --> H[PDF factura fiscal<br/>tabla conceptos + IVA]
+```
+
+**Ejemplo visual del PDF fiscal (estructura):**
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  FACTURA  FAC-2026-0042          Fecha: 17/05/2026      │
+├──────────────────────┬──────────────────────────────────┤
+│ EMISOR               │ CLIENTE                          │
+│ Hotel Pere María     │ Juan Pérez · DNI 12345678A       │
+│ B12345678 · Alicante │ juan@email.com                   │
+├──────────────────────┴──────────────────────────────────┤
+│ Concepto          │ Cant. │ P. unit. │ Total            │
+│ Alojamiento 3 noches│   1   │  90,00 € │  90,00 €         │
+│ Extra: Cuna        │   1   │  15,00 € │  15,00 €         │
+├─────────────────────────────────────────────────────────┤
+│                    Base imponible:     95,45 €          │
+│                    IVA 10%:             9,55 €          │
+│                    TOTAL FACTURA:       105,00 €          │
+└─────────────────────────────────────────────────────────┘
+```
+
+### P19 · Decisión de aprobación
+
+```mermaid
+flowchart TD
+    S[Solicitud early o late] --> V{¿Mismo día<br/>entrada/salida?}
+    V -->|No| R1[Rechazada]
+    V -->|Sí| D{¿Hueco habitación?}
+    D -->|No| R2[Rechazada todos]
+    D -->|Sí| T{Rango fidelidad}
+    T -->|Bronce| P[pending → WPF aprueba]
+    T -->|Plata / Oro| A[approved auto]
+    A --> F{final_fee > 0?}
+    F -->|Sí| I[HotelInvoice P19]
+```
+
+### Ventana 12 h (solo cliente, día de salida)
+
+```mermaid
+gantt
+    title Día de salida (ejemplo)
+    dateFormat HH:mm
+    axisFormat %H:%M
+
+    section Estancia
+    Habitación hasta 11:00     :a1, 00:00, 11:00
+    section Cliente APP
+    Puede pedir late / ampl. corta :crit, 11:00, 12h
+    section Recepción WPF
+    Sin límite de 12 h         :b1, 11:00, 24h
+```
+
+### Auditoría · Antes / después (respuesta API)
+
+```mermaid
+flowchart LR
+    subgraph mongo["booking_audit_log"]
+        P[previous_state]
+        N[new_state]
+    end
+    subgraph get["GET …/audit"]
+        D[detalle_cambios]
+        R[resumen_cambios]
+    end
+    P --> D
+    N --> D
+    D --> WPF[WPF tabla<br/>Antes · Después]
+```
+
+| Campo (etiqueta) | Antes | Después |
+|------------------|-------|---------|
+| Precio | 120 | 150 |
+| Salida | 2026-05-20 11:00 | 2026-05-21 11:00 |
 
 ---
 
