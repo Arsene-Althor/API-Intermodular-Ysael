@@ -63,6 +63,98 @@ const ETIQUETA_CAMPO = {
   late_checkout_requested: 'Solicitud salida tardía',
 };
 
+const ETIQUETA_SUBCAMPO = {
+  status: 'Estado',
+  requested_time: 'Hora solicitada',
+  requested_at: 'Solicitado el',
+  final_fee: 'Suplemento',
+  base_fee: 'Tarifa base',
+  discount_percent: 'Descuento %',
+  loyalty_tier: 'Rango',
+  hours_difference: 'Horas',
+  rate_per_hour: '€/hora',
+  availability_ok: 'Disponible',
+  auto_approved: 'Auto-aprobado',
+  approval_mode: 'Modo',
+  reviewed_by: 'Revisado por',
+  review_note: 'Nota',
+  reviewed_at: 'Revisado el',
+  client_notified_at: 'Cliente notificado',
+  late_mode: 'Modo salida',
+};
+
+function esObjetoPlano(val) {
+  return val !== null && typeof val === 'object' && !Array.isArray(val);
+}
+
+/** Desglosa early_checkin_requested, etc. en filas por subcampo. */
+function expandirDetalleSubdocumentos(campo, etiqueta, antes, despues) {
+  if (!esObjetoPlano(antes) && !esObjetoPlano(despues)) {
+    const ta = valorTextoAuditoria(antes);
+    const tb = valorTextoAuditoria(despues);
+    return {
+      filas: [{ campo, etiqueta, antes, despues }],
+      resumenes: [`${etiqueta}: ${ta} → ${tb}`],
+    };
+  }
+  const a = esObjetoPlano(antes) ? antes : {};
+  const b = esObjetoPlano(despues) ? despues : {};
+  const subKeys = new Set([...Object.keys(a), ...Object.keys(b)]);
+  const filas = [];
+  const resumenes = [];
+  for (const sk of subKeys) {
+    const va = a[sk];
+    const vb = b[sk];
+    if (mismoValorAuditoria(va, vb)) continue;
+    const subEt = ETIQUETA_SUBCAMPO[sk] || sk;
+    const ta = valorTextoAuditoria(va);
+    const tb = valorTextoAuditoria(vb);
+    filas.push({
+      campo: `${campo}.${sk}`,
+      etiqueta: `${etiqueta} · ${subEt}`,
+      antes: va ?? null,
+      despues: vb ?? null,
+    });
+    resumenes.push(`${etiqueta} · ${subEt}: ${ta} → ${tb}`);
+  }
+  if (filas.length === 0) {
+    filas.push({ campo, etiqueta, antes, despues });
+    resumenes.push(`${etiqueta}: (sin cambios en subcampos visibles)`);
+  }
+  return { filas, resumenes };
+}
+
+function formatearSubdocumentoAuditoria(obj) {
+  if (!obj || typeof obj !== 'object') return '—';
+  const partes = [];
+  const mapa = {
+    status: 'estado',
+    requested_time: 'hora',
+    final_fee: 'suplemento',
+    base_fee: 'tarifa',
+    loyalty_tier: 'rango',
+    hours_difference: 'horas',
+    auto_approved: 'auto',
+    late_mode: 'modo',
+  };
+  for (const [k, etiqueta] of Object.entries(mapa)) {
+    if (obj[k] === undefined || obj[k] === null) continue;
+    let v = obj[k];
+    if (k === 'requested_time' || k === 'requested_at') {
+      const d = new Date(v);
+      v = !isNaN(d.getTime()) ? d.toISOString().slice(0, 16).replace('T', ' ') : v;
+    } else if (typeof v === 'boolean') {
+      v = v ? 'sí' : 'no';
+    } else if (k === 'final_fee' || k === 'base_fee') {
+      v = `${v} €`;
+    }
+    partes.push(`${etiqueta} ${v}`);
+  }
+  if (partes.length > 0) return partes.join(', ');
+  const raw = JSON.stringify(obj);
+  return raw.length > 120 ? `${raw.slice(0, 120)}…` : raw;
+}
+
 function valorTextoAuditoria(val) {
   if (val === null || val === undefined) return '—';
   if (typeof val === 'number') return String(val);
@@ -74,7 +166,7 @@ function valorTextoAuditoria(val) {
     return val;
   }
   if (typeof val === 'boolean') return val ? 'sí' : 'no';
-  if (typeof val === 'object') return JSON.stringify(val);
+  if (typeof val === 'object') return formatearSubdocumentoAuditoria(val);
   return String(val);
 }
 
@@ -104,15 +196,9 @@ function describeReservationAuditChanges(previous_state, new_state, action) {
     if (mismoValorAuditoria(antes, despues)) continue;
 
     const etiqueta = ETIQUETA_CAMPO[key] || key;
-    const ta = valorTextoAuditoria(antes);
-    const tb = valorTextoAuditoria(despues);
-    detalle_cambios.push({
-      campo: key,
-      etiqueta,
-      antes,
-      despues,
-    });
-    resumen_cambios.push(`${etiqueta}: ${ta} → ${tb}`);
+    const exp = expandirDetalleSubdocumentos(key, etiqueta, antes, despues);
+    detalle_cambios.push(...exp.filas);
+    resumen_cambios.push(...exp.resumenes);
   }
 
   if (resumen_cambios.length === 0) {

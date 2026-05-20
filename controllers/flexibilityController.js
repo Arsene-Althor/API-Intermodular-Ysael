@@ -86,7 +86,19 @@ async function submitFlexibilityRequest(req, res, kind) {
   const avail = await checkRoomAvailability(reservation, requestedTime, kind, lateMode);
   const tier = await getLoyaltyTierForUser(reservation.user_id);
   const quote = await computeFlexibilityPricing(reservation, kind, requestedTime, tier);
-  const approval = resolveApprovalDecision(tier, avail.ok, avail.reason);
+  let approval = resolveApprovalDecision(tier, avail.ok, avail.reason);
+
+  // Huésped (app): siempre pending si hay hueco → recepción aprueba/rechaza en WPF.
+  // Auto-aprobación solo al solicitar como empleado/admin (mostrador).
+  const isClient = req.user.role === 'client';
+  if (isClient && avail.ok) {
+    approval = {
+      status: 'pending',
+      auto_approved: false,
+      approval_mode: 'manual',
+      review_note: `Pendiente de revisión en recepción (rango ${tier})`,
+    };
+  }
 
   const block = buildRequestPayload({
     quote,
@@ -142,11 +154,13 @@ async function submitFlexibilityRequest(req, res, kind) {
         : 'salida tardía';
   let mensaje;
   if (block.status === 'approved') {
-    mensaje = `Solicitud de ${typeLabel} aprobada automáticamente (rango ${tier})`;
+    mensaje = isClient
+      ? `Solicitud de ${typeLabel} aprobada`
+      : `Solicitud de ${typeLabel} aprobada automáticamente (rango ${tier})`;
   } else if (block.status === 'rejected') {
     mensaje = `Solicitud de ${typeLabel} rechazada: sin disponibilidad en la franja horaria`;
   } else {
-    mensaje = `Solicitud de ${typeLabel} registrada; pendiente de revisión en recepción (rango bronce)`;
+    mensaje = `Solicitud de ${typeLabel} registrada; pendiente de revisión en recepción (rango ${tier})`;
   }
 
   return res.json({
@@ -189,10 +203,10 @@ async function getFlexibilityStatus(req, res) {
       pricing_config: pricingConfig,
       pricing_formula: 'suplemento = horas_diferencia × €/h (mín. min_billable_hours); descuento por rango fidelidad',
       auto_approval_rules: {
+        cliente_app: 'pending si hay disponibilidad (recepción aprueba o rechaza)',
+        empleado_mostrador: 'plata/oro pueden aprobarse al registrar la solicitud',
         bronze: 'pending (revisión manual) si hay disponibilidad',
-        silver: 'approved automático si hay disponibilidad',
-        gold: 'approved automático si hay disponibilidad',
-        sin_disponibilidad: 'rejected para todos los rangos',
+        sin_disponibilidad: 'rejected automático para todos (sin hueco en habitación)',
       },
       standard_check_in: standardCheckIn(reservation),
       standard_check_out: standardCheckOut(reservation),
